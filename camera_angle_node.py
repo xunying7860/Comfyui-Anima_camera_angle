@@ -54,10 +54,10 @@ class CameraAngleNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "pos_x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.20}),
-                "pos_y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.20}),
-                "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.20}),
-                "roll": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.20}),
+                "pos_x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
+                "pos_y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
+                "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
+                "roll": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.10}),
                 # 标签 JSON（required STRING 确保序列化，前端极小化隐藏）
                 "_tags_json": ("STRING", {"multiline": False, "default": "{}"}),
             },
