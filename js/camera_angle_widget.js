@@ -232,6 +232,44 @@ app.registerExtension({
       const clampY = () => { const wy = gw("pos_y"); if (wy) wy.value = Math.max(-1, Math.min(1, wy.value || 0)); };
       clampY();
       node.onConfigure = (function(orig) { return function() { if (orig) orig.apply(this, arguments); setTimeout(clampY, 50); }; })(node.onConfigure);
+
+      // pos_z 吸入距离档位（6 档）
+      const snapZ = () => {
+        const wz = gw("pos_z");
+        if (!wz) return;
+        let best = 0;
+        for (let i = 1; i < DIST_GEARS.length; i++) {
+          if (Math.abs(wz.value - DIST_GEARS[i]) < Math.abs(wz.value - DIST_GEARS[best])) best = i;
+        }
+        wz.value = DIST_GEARS[best];
+      };
+      // 监听 pos_z widget 变更时切换到相邻档位
+      (function() {
+        const wz = gw("pos_z");
+        if (wz && !wz._zHooked) {
+          let oldVal = parseFloat(wz.value) || 0;
+          const origCb = wz.callback;
+          wz.callback = function(v) {
+            if (origCb) origCb.call(this, v);
+            const dir = parseFloat(v) > oldVal ? 1 : -1;
+            let idx = DIST_GEARS.indexOf(oldVal);
+            if (idx < 0) {
+              // 不在档位上，吸入最近档
+              let best = 0;
+              for (let i = 1; i < DIST_GEARS.length; i++) {
+                if (Math.abs(v - DIST_GEARS[i]) < Math.abs(v - DIST_GEARS[best])) best = i;
+              }
+              wz.value = DIST_GEARS[best];
+            } else {
+              // 切到相邻档位
+              const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, idx + dir));
+              wz.value = DIST_GEARS[ni];
+            }
+            oldVal = parseFloat(wz.value) || 0;
+          };
+          wz._zHooked = true;
+        }
+      })();
       function readW() {
         S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = toFixed2(gw("roll")?.value ?? 0);
