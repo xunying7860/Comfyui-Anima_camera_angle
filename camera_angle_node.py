@@ -22,7 +22,8 @@ DEFAULT_TAGS = {
     }},
     "distance": {"categories": {
         "ecu": {"tag": "extreme close-up"}, "cu": {"tag": "close-up"},
-        "medium": {"tag": "medium shot"}, "full": {"tag": "full body"},
+        "medium": {"tag": "medium shot"}, "cowboy_shot": {"tag": "cowboy shot"},
+        "full": {"tag": "full body"},
         "wide": {"tag": "wide shot"},
     }},
     "tilt": {"dutch_tag": "dutch angle"},
@@ -97,7 +98,8 @@ class CameraAngleNode:
     def _distance_key(z):
         if z > 0.7: return "ecu"
         if z > 0.2: return "cu"
-        if z >= -0.2: return "medium"
+        if z > 0.0: return "medium"
+        if z > -0.35: return "cowboy_shot"
         if z >= -0.7: return "full"
         return "wide"
 

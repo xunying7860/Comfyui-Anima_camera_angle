@@ -30,7 +30,7 @@ const DC = {
   weight_min: 0.1, weight_max: 10,
   azimuth: { weight: 10, deadzone_ratio: 0.05, directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
   elevation: { extra: 10, categories: { bird: { tag: "bird's-eye view" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "worm's-eye view" } } },
-  distance: { extra: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
+  distance: { extra: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
   tilt: { deadzone: 0.15, extra: 0, dutch_tag: "dutch angle" }, extra_master: 1,
   extras: { lens: { enabled: false, value: "85mm lens" }, dof: { enabled: false, value: "shallow depth of field", weight: 1.3 }, movement: { enabled: false, value: "handheld camera" }, composition: { enabled: false, value: "rule of thirds" }, style: { enabled: false, value: "cinematic" } },
 };
@@ -58,7 +58,7 @@ function computePrompt(px, py, pz, roll, c) {
   const ek = py > 0.7 ? "bird" : py > 0.2 ? "high" : py >= -0.2 ? "eye" : py >= -0.7 ? "low" : "worm";
   const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const ew = Math.abs(py) * (1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.elevation.extra) || 0)); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax)); }
   // 距离
-  const dk = pz > 0.7 ? "ecu" : pz > 0.2 ? "cu" : pz >= -0.2 ? "medium" : pz >= -0.7 ? "full" : "wide";
+  const dk = pz > 0.7 ? "ecu" : pz > 0.2 ? "cu" : pz > 0.0 ? "medium" : pz > -0.35 ? "cowboy_shot" : pz >= -0.7 ? "full" : "wide";
   const di = c.distance.categories[dk]; if (di && di.tag) p.push(...emitWeighted(di.tag, 1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.distance.extra) || 0), 0.1, wmax));
   // 倾斜
   if (roll > 0) p.push(...emitWeighted(c.tilt.dutch_tag, roll * 10, 0.1, wmax));
@@ -202,7 +202,7 @@ app.registerExtension({
       scene.add(distH);
       const distG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0xFFB800, transparent: true, opacity: 0.25 }));
       scene.add(distG);
-      const DIST_GEARS = [-0.85, -0.45, 0.0, 0.45, 0.85]; // 远景→特写 5 档
+      const DIST_GEARS = [-0.85, -0.52, -0.17, 0.10, 0.45, 0.85]; // 远景→特写 5 档
       function snapDist() {
         let idx = 0;
         for (let i = 1; i < DIST_GEARS.length; i++) {
@@ -219,7 +219,7 @@ app.registerExtension({
       const TAGS = {
         azimuth: { directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
         elevation: { categories: { bird: { tag: "bird's-eye view" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "worm's-eye view" } } },
-        distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
+        distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
         tilt: { dutch_tag: "dutch angle" },
       };
       function syncTagsToWidget() {
@@ -330,7 +330,7 @@ app.registerExtension({
         let idx = DIST_GEARS.indexOf(S.pz);
         if (idx < 0) { snapDist(); idx = DIST_GEARS.indexOf(S.pz); }
         const dir = e.deltaY > 0 ? 1 : -1;
-        const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, (idx >= 0 ? idx : 2) + dir));
+        const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, (idx >= 0 ? idx : 3) + dir));
         S.pz = DIST_GEARS[ni]; S.dist = S.pz * 4.5 + 5.5; syncN();
       }, { passive: false });
  
@@ -374,6 +374,7 @@ app.registerExtension({
           ["特写", "distance > categories > ecu > tag", "extreme close-up"],
           ["近景", "distance > categories > cu > tag", "close-up"],
           ["中景", "distance > categories > medium > tag", "medium shot"],
+          ["牛仔", "distance > categories > cowboy_shot > tag", "cowboy shot"],
           ["全身", "distance > categories > full > tag", "full body"],
           ["远景", "distance > categories > wide > tag", "wide shot"],
         ]],
