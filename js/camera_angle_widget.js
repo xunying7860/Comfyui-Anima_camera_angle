@@ -39,20 +39,30 @@ function clamp(v, mn, mx) { return v < mn ? mn : v > mx ? mx : v; }
 function fmt(v) { const n = parseFloat(v); return isNaN(n) ? "0.00" : Math.round(n * 100) / 100 + ""; }
 
 // ============================================================
-// 2. computePrompt
+// 2. computePrompt（与 Python 后端保持算法一致）
 // ============================================================
+function splitTags(tag) { return String(tag).split(",").map(t => t.trim()).filter(t => t); }
+function emitWeighted(tag, w, wmin, wmax) {
+  return splitTags(tag).map(t => `(${t}:${fmt(clamp(w, wmin, wmax))})`);
+}
 function computePrompt(px, py, pz, roll, c) {
-  const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 5;
+  const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 5, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.2;
+  // 方位（极向门控）
   const az = px * Math.PI;
   const d = { front: Math.max(0, Math.cos(az)), back: Math.max(0, -Math.cos(az)), right: Math.max(0, Math.sin(az)), left: Math.max(0, -Math.sin(az)) };
   const s = d.front + d.back + d.right + d.left; if (s > 0) { d.front /= s; d.back /= s; d.right /= s; d.left /= s; }
-  const aw = parseFloat(c.azimuth.weight) || 1, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.2, bw = (1 - Math.abs(py)) * aw;
-  for (const [k, nv] of Object.entries(d)) { const r = nv * bw; if (nv <= 0 || r < dz) continue; p.push(`(${c.azimuth.directions[k].tag}:${fmt(clamp(r, wmin, wmax))})`); }
+  const AZ_POLE = 0.9, azGate = Math.max(0, Math.min(1, (1 - Math.abs(py)) / (1 - AZ_POLE)));
+  const azBudget = (parseFloat(c.azimuth.weight) || 1) * azGate;
+  for (const [k, nv] of Object.entries(d)) { const w = nv * azBudget; if (nv <= 0 || w < dz) continue; p.push(...emitWeighted(c.azimuth.directions[k].tag, w, wmin, wmax)); }
+  // 高度
   const ek = py > 0.7 ? "bird" : py > 0.2 ? "high" : py >= -0.2 ? "eye" : py >= -0.7 ? "low" : "worm";
-  const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const ew = Math.abs(py) * (1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.elevation.extra) || 0)); if (ew >= dz) p.push(`(${ei.tag}:${fmt(clamp(ew, wmin, wmax))})`); }
+  const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const ew = Math.abs(py) * (1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.elevation.extra) || 0)); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax)); }
+  // 距离
   const dk = pz > 0.7 ? "ecu" : pz > 0.2 ? "cu" : pz >= -0.2 ? "medium" : pz >= -0.7 ? "full" : "wide";
-  const di = c.distance.categories[dk]; if (di && di.tag) p.push(`(${di.tag}:${fmt(clamp(1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.distance.extra) || 0), wmin, wmax))})`);
-  if (roll > 0) p.push(`(${c.tilt.dutch_tag}:${fmt(clamp(roll * 10, 0.1, parseFloat(c.weight_max) || 5))})`);
+  const di = c.distance.categories[dk]; if (di && di.tag) p.push(...emitWeighted(di.tag, 1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.distance.extra) || 0), 0.1, wmax));
+  // 倾斜
+  if (roll > 0) p.push(...emitWeighted(c.tilt.dutch_tag, roll * 10, 0.1, wmax));
+  // 额外提示词
   const ex = c.extras || {}; for (const k of ["lens", "dof", "movement", "composition", "style"]) { const e = ex[k]; if (e && e.enabled && e.value && e.value.trim()) { p.push(k === "dof" ? `(${e.value.trim()}:${fmt(e.weight || 1)})` : e.value.trim()); } }
   return p.join(", ");
 }
@@ -107,19 +117,38 @@ app.registerExtension({
       orig?.apply(this, arguments);
       const node = this;
 
-      // 隐藏 extra_config
-      const ecw = gw("extra_config");
-      if (ecw) { ecw.type = "converted-widget"; ecw.computeSize = () => [0, 0]; if (ecw.element) ecw.element.style.display = "none"; }
+      // 隐藏 extra_config（可选输入）
+      ["extra_config"].forEach(name => {
+        const w = node.widgets?.find(w => w.name === name);
+        if (w) { w.type = "converted-widget"; w.computeSize = () => [0, 0]; if (w.element) w.element.style.display = "none"; }
+      });
+      // 隐藏 _tags_json（required STRING，不转换 type 以保留序列化，仅 DOM 层面隐藏）
+      setTimeout(() => {
+        const w = node.widgets?.find(w => w.name === "_tags_json");
+        if (w && w.element) {
+          w.computeSize = () => [0, 0];
+          w.element.style.cssText = "display:none!important;height:0!important;min-height:0!important;padding:0!important;margin:0!important;border:none!important;overflow:hidden!important";
+          if (w.element.parentNode) w.element.parentNode.style.display = "none";
+        }
+      }, 200);
 
       const [ow, oh] = node.size;
-      node.setSize([Math.max(ow, 380), Math.max(oh, 460)]);
+      node.setSize([Math.max(ow, 380), Math.max(oh, 580)]);
 
       const container = document.createElement("div"); container.className = "an3-w"; container.style.width = "100%";
-      try { node.addDOMWidget("cam3d", "anima-cam-3d", container, { getMinHeight: () => 360, getMaxHeight: () => 720, hideOnZoom: false, serialize: false }); }
+      try { node.addDOMWidget("cam3d", "anima-cam-3d", container, { getMinHeight: () => 400, getMaxHeight: () => 800, hideOnZoom: false, serialize: false }); }
       catch (e) { console.warn("[AnimaCamera] addDOMWidget fail:", e); return; }
 
       // ============= Three.js 场景 =============
-      const CW = 560, CH = 500;
+      let CW = Math.max(container.clientWidth || 360, 280);
+      let CH = Math.round(CW * 500 / 560);
+      // 监听容器尺寸变化，调整画布
+      const ro = new ResizeObserver(() => {
+        const nw = Math.max(container.clientWidth || 280, 280);
+        if (nw !== CW) { CW = nw; CH = Math.round(CW * 500 / 560);
+          renderer.setSize(CW, CH, false); cam3d.aspect = CW / CH; cam3d.updateProjectionMatrix(); }
+      });
+      ro.observe(container);
       const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a14);
       const cam3d = new THREE.PerspectiveCamera(45, CW / CH, 0.1, 100);
       cam3d.position.set(4, 3.5, 4); cam3d.lookAt(0, 0.3, 0);
@@ -176,13 +205,29 @@ app.registerExtension({
       let distTube = null;
 
       // ---- 参数状态 ----
-      const S = { px: 0, py: 0, pz: 0, rv: 0, cfg: JSON.parse(JSON.stringify(DC)), azimuth: 0, elevation: 0, dist: 5, dragging: false, tgt: null, hovered: null, animId: null };
+      const S = { px: 0, py: 0, pz: 0, rv: 0, cfg: JSON.parse(JSON.stringify(DC)), azimuth: 0, elevation: 15, dist: 5.5, dragging: false, tgt: null, hovered: null, animId: null };
+      // 标签内存缓存（写时同步 extra_config 做持久化，读时直接用内存保证实时响应）
+      const TAGS = {
+        azimuth: { directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
+        elevation: { categories: { bird: { tag: "bird's-eye view" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "worm's-eye view" } } },
+        distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
+        tilt: { dutch_tag: "dutch angle" },
+      };
+      function syncTagsToWidget() {
+        const rw = gw("_tags_json");
+        if (rw) rw.value = JSON.stringify(TAGS);
+      }
 
       function gw(n) { return node.widgets?.find(w => w.name === n); }
+      // 强制钳制 pos_y（工作流加载完成后 ComfyUI 可能重写 widget 值）
+      const clampY = () => { const wy = gw("pos_y"); if (wy) wy.value = Math.max(-1, Math.min(1, wy.value || 0)); };
+      clampY();
+      node.onConfigure = (function(orig) { return function() { if (orig) orig.apply(this, arguments); setTimeout(clampY, 50); }; })(node.onConfigure);
       function readW() {
         S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = toFixed2(gw("roll")?.value ?? 0);
-        S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45; S.dist = 5 + S.pz * 5;
+        // elevation -30°~60° → py -1~1, dist 1~10 → pz -1~1
+        S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
       }
       readW(); setTimeout(readW, 200);
 
@@ -191,14 +236,13 @@ app.registerExtension({
         const wz = gw("pos_z"); if (wz) wz.value = S.pz; const wr = gw("roll"); if (wr) wr.value = S.rv;
         if (node.graph) node.graph.setDirtyCanvas(true, true);
       }
-      readW(); setTimeout(readW, 200);
 
-      // ---- 更新 3D（每帧从 widget 读取最新值，实时响应） ----
+      // ---- 更新 3D ----
       function upd() {
         // 从 widget 读取最新值
         S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = parseFloat(gw("roll")?.value ?? 0);
-        S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45; S.dist = 5 + S.pz * 5;
+        S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
         const ar = S.azimuth * Math.PI / 180, er = S.elevation * Math.PI / 180, vd = 2.6 - (S.dist / 10) * 2.0;
         const cx = vd * Math.sin(ar) * Math.cos(er), cy = CENTER.y + vd * Math.sin(er), cz = vd * Math.cos(ar) * Math.cos(er);
         camCone.position.set(cx, cy, cz); camCone.lookAt(CENTER); camCone.rotateX(Math.PI / 2);
@@ -212,6 +256,11 @@ app.registerExtension({
         const ad = S.px * 180;
         hDir.textContent = Math.abs(S.px) > 0.85 ? "背面 · 180°" : S.px < -0.05 ? "左 " + Math.abs(ad).toFixed(0) + "°" : S.px > 0.05 ? "右 " + ad.toFixed(0) + "°" : "正面 · 0°";
         hRoll.textContent = S.rv > 0 ? "倾斜: " + (S.rv * 10).toFixed(2) : "";
+        // 合并自定义标签到预览配置（从内存 TAGS 直接读取，实时响应）
+        S.cfg.azimuth = TAGS.azimuth;
+        S.cfg.elevation = TAGS.elevation;
+        S.cfg.distance = TAGS.distance;
+        S.cfg.tilt = TAGS.tilt;
         if (previewEl) previewEl.value = computePrompt(S.px, S.py, S.pz, S.rv, S.cfg);
       }
 
@@ -255,18 +304,79 @@ app.registerExtension({
           if (ray.ray.intersectPlane(plane, pt)) { let a = Math.atan2(pt.x, pt.z) * 180 / Math.PI; if (a < 0) a += 360; S.azimuth = Math.max(0, Math.min(360, a)); S.px = ((S.azimuth + 180) % 360 - 180) / 180; syncN(); }
         } else if (S.tgt === "el") {
           plane.setFromNormalAndCoplanarPoint(new THREE.Vector3(1, 0, 0), new THREE.Vector3(-0.8, 0, 0));
-          if (ray.ray.intersectPlane(plane, pt)) { let a = Math.atan2(pt.y - CENTER.y, pt.z) * 180 / Math.PI; a = Math.max(-30, Math.min(60, a)); S.elevation = a; S.py = a / 45; syncN(); }
-        } else if (S.tgt === "dist") { S.dist = Math.max(1, Math.min(10, S.dist + (e.movementY || 0) * 0.05)); S.pz = (S.dist - 5) / 5; syncN(); }
+          if (ray.ray.intersectPlane(plane, pt)) { let a = Math.atan2(pt.y - CENTER.y, pt.z) * 180 / Math.PI; a = Math.max(-30, Math.min(60, a)); S.elevation = a; S.py = (a - 15) / 45; syncN(); }
+        } else if (S.tgt === "dist") { S.dist = Math.max(1, Math.min(10, S.dist + (e.movementY || 0) * 0.05)); S.pz = (S.dist - 5.5) / 4.5; syncN(); }
       });
       renderer.domElement.addEventListener("pointerup", () => { if (!S.dragging) return; S.dragging = false; S.tgt = null; if (S.hovered) setScale(S.hovered, 1.0); });
       renderer.domElement.addEventListener("pointercancel", () => { S.dragging = false; S.tgt = null; });
-      renderer.domElement.addEventListener("wheel", e => { e.preventDefault(); S.dist = clamp(S.dist - e.deltaY * 0.01, 1, 10); S.pz = (S.dist - 5) / 5; syncN(); }, { passive: false });
-
+      renderer.domElement.addEventListener("wheel", e => { e.preventDefault(); S.dist = clamp(S.dist - e.deltaY * 0.01, 1, 10); S.pz = (S.dist - 5.5) / 4.5; syncN(); }, { passive: false });
+ 
       // ---- 按钮行 ----
       const bRow = document.createElement("div"); bRow.className = "btn-r"; container.appendChild(bRow);
       const rst = document.createElement("button"); rst.textContent = "归位";
-      rst.onclick = () => { S.azimuth = 0; S.elevation = 0; S.dist = 5; S.px = S.py = S.pz = S.rv = 0; syncN(); };
+      rst.onclick = () => { S.azimuth = 0; S.elevation = 15; S.dist = 5.5; S.px = S.py = S.pz = S.rv = 0; syncN(); };
       bRow.appendChild(rst);
+      // ---- 标签编辑按钮 ----
+      const tagBtn = document.createElement("button"); tagBtn.textContent = "🏷 标签";
+      const TAG_PANEL_H = 280; // 标签面板固定高度
+      tagBtn.onclick = function () {
+        const show = tagPanel.style.display === "none";
+        tagPanel.style.display = show ? "block" : "none";
+        this.textContent = show ? "✕ 收起标签" : "🏷 标签";
+        node.setSize([node.size[0], Math.max(580, node.size[1] + (show ? TAG_PANEL_H : -TAG_PANEL_H))]);
+        if (node.graph) node.graph.setDirtyCanvas(true, true);
+      };
+      bRow.appendChild(tagBtn);
+
+      // ---- 标签编辑面板 ----
+      const tagPanel = document.createElement("div");
+      tagPanel.style.cssText = "display:none;border:1px solid #444;border-radius:6px;padding:6px;background:rgba(0,0,0,0.3);margin-top:4px;max-height:300px;overflow-y:auto";
+      container.appendChild(tagPanel);
+
+      const tagFields = [
+        ["方位", [
+          ["前方", "azimuth > directions > front > tag", "from front"],
+          ["后方", "azimuth > directions > back > tag", "from behind"],
+          ["左侧", "azimuth > directions > left > tag", "facing right"],
+          ["右侧", "azimuth > directions > right > tag", "facing left"],
+        ]],
+        ["高度", [
+          ["鸟瞰", "elevation > categories > bird > tag", "bird's-eye view"],
+          ["俯视", "elevation > categories > high > tag", "high angle"],
+          ["平视", "elevation > categories > eye > tag", "eye-level"],
+          ["仰视", "elevation > categories > low > tag", "low angle"],
+          ["虫瞰", "elevation > categories > worm > tag", "worm's-eye view"],
+        ]],
+        ["距离", [
+          ["特写", "distance > categories > ecu > tag", "extreme close-up"],
+          ["近景", "distance > categories > cu > tag", "close-up"],
+          ["中景", "distance > categories > medium > tag", "medium shot"],
+          ["全身", "distance > categories > full > tag", "full body"],
+          ["远景", "distance > categories > wide > tag", "wide shot"],
+        ]],
+        ["倾斜", [["倾斜", "tilt > dutch_tag", "dutch angle"]]],
+      ];
+      tagFields.forEach(([group, fields]) => {
+        const gl = document.createElement("div"); gl.style.cssText = "font-size:10px;color:#667eea;margin:6px 0 2px 0;font-weight:bold"; gl.textContent = group; tagPanel.appendChild(gl);
+        fields.forEach(([label, path, def]) => {
+          const parts = path.split(" > ");
+          const row = document.createElement("div"); row.style.cssText = "display:flex;align-items:center;gap:4px;margin:1px 0";
+          const lbl = document.createElement("span"); lbl.style.cssText = "width:40px;font-size:9px;color:rgba(255,255,255,0.6);flex-shrink:0"; lbl.textContent = label; row.appendChild(lbl);
+          const inp = document.createElement("input"); inp.type = "text"; inp.style.cssText = "flex:1;min-width:0;font-size:9px;background:#222;border:1px solid #444;color:#ddd;border-radius:3px;padding:1px 4px";
+          // 从 TAGS 读取当前值
+          let val = def;
+          try { let o = TAGS; for (const p of parts) { if (o && typeof o === 'object') o = o[p]; } if (typeof o === 'string') val = o; } catch(_) {}
+          inp.value = val;
+          inp.oninput = function () {
+            // 写入 TAGS 内存（直接生效，upd 下一帧自动读取）
+            let o = TAGS; for (let i = 0; i < parts.length - 1; i++) { if (!o[parts[i]]) o[parts[i]] = {}; o = o[parts[i]]; }
+            o[parts[parts.length - 1]] = this.value;
+            syncTagsToWidget(); // 同步到 extra_config 做持久化
+          };
+          row.appendChild(inp); tagPanel.appendChild(row);
+        });
+      });
+      syncTagsToWidget(); // 初始化写入持久化
 
       // ---- 预览 ----
       const previewEl = document.createElement("textarea"); previewEl.className = "pr"; previewEl.readOnly = true; previewEl.rows = 2; container.appendChild(previewEl);

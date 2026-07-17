@@ -1,21 +1,15 @@
 """
-CameraAngleNode - 可视化相机提示词控制节点（权重内置版）
+CameraAngleNode - 可视化相机提示词控制节点（极向门控版）
 
-权重/死区参数完全内置在主节点内部，不出现在外部。
-通过 3D 场景内的配置面板调整。
-标签和额外提示词仍可接入可选配置节点。
+权重/死区参数固定为合理默认值，不再由外部面板控制。
+标签固定使用默认值，不再支持外部 tag_config 覆盖。
+额外提示词仍可接入可选配置节点。
 """
 
 import json
 import math
 
-# 默认参数
-DEFAULT_WEIGHTS = {
-    "azimuth_weight": 10.0, "weight_max": 10.0, "extra_master": 1.0,
-    "elevation_extra": 10.0, "distance_extra": 0.0, "tilt_extra": 0.0,
-    "azimuth_deadzone": 0.20, "tilt_deadzone": 0.15,
-}
-
+# 默认标签
 DEFAULT_TAGS = {
     "azimuth": {"directions": {
         "front": {"tag": "from front"}, "back": {"tag": "from behind"},
@@ -34,6 +28,7 @@ DEFAULT_TAGS = {
     "tilt": {"dutch_tag": "dutch angle"},
 }
 
+# 默认额外提示词
 DEFAULT_EXTRAS = {
     "lens": {"enabled": False, "value": "85mm lens"},
     "dof": {"enabled": False, "value": "shallow depth of field", "weight": 1.3},
@@ -53,16 +48,18 @@ def _deep_merge(base, override):
 
 
 class CameraAngleNode:
-    """可视化相机提示词控制节点（权重完全内置）"""
+    """可视化相机提示词控制节点（极向门控版）"""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "pos_x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01}),
-                "pos_y": ("FLOAT", {"default": 0.0, "min": -1.34, "max": 1.34, "step": 0.01}),
-                "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01}),
-                "roll": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "pos_x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.20}),
+                "pos_y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.20}),
+                "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.20}),
+                "roll": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.20}),
+                # 标签 JSON（required STRING 确保序列化，前端极小化隐藏）
+                "_tags_json": ("STRING", {"multiline": False, "default": "{}"}),
             },
             "optional": {
                 "extra_config": ("*", {"default": ""}),
@@ -77,6 +74,16 @@ class CameraAngleNode:
     @staticmethod
     def _fmt_weight(w):
         return f"{round(float(w), 2):.2f}"
+
+    @staticmethod
+    def _split_tags(tag):
+        """逗号分隔的多标签拆分为列表。"""
+        return [t.strip() for t in str(tag).split(",") if t.strip()]
+
+    @classmethod
+    def _emit_weighted(cls, tag, w):
+        """多标签共享同一权重输出。"""
+        return [f"({t}:{cls._fmt_weight(w)})" for t in cls._split_tags(tag)]
 
     @staticmethod
     def _elevation_key(y):
@@ -95,20 +102,28 @@ class CameraAngleNode:
         return "wide"
 
     def execute(self, pos_x, pos_y, pos_z, roll,
-                extra_config=""):
-        # 钳制输入值到合法范围（兼容老工作流超限值）
+                _tags_json="{}", extra_config=""):
+
+        # 钳制输入值到合法范围
         pos_x = max(-1.0, min(1.0, float(pos_x)))
-        pos_y = max(-1.34, min(1.34, float(pos_y)))
+        pos_y = max(-1.0, min(1.0, float(pos_y)))
         pos_z = max(-1.0, min(1.0, float(pos_z)))
         roll = max(0.0, min(1.0, float(roll)))
 
-        # 固定权重参数（不再由前端面板控制，保持合理的默认值）
+        # 固定权重参数
         w_az = 10.0; w_max = 10.0; w_ma = 1.0; w_el = 10.0
         w_di = 0.0; w_az_dz = 0.2
-        # 标签固定使用默认值（不再支持外部 tag_config 覆盖）
+
+        # 加载标签（默认值 + _tags_json 覆盖）
         tags = {}
         _deep_merge(tags, DEFAULT_TAGS)
+        if _tags_json and _tags_json != "{}":
+            try:
+                td = json.loads(_tags_json)
+                if isinstance(td, dict): _deep_merge(tags, td)
+            except Exception: pass
 
+        # 加载额外提示词（从 extra_config）
         extras = {}
         _deep_merge(extras, DEFAULT_EXTRAS)
         if extra_config:
@@ -117,8 +132,10 @@ class CameraAngleNode:
                 if "extras" in ec: extras.update(ec["extras"])
             except Exception: pass
 
+        wmin = 0.1; wmax = w_max; dz = w_az_dz
         parts = []
-        wmax = w_max
+
+        # ---------- 方位（极向门控） ----------
         az = float(pos_x) * math.pi
         front = max(0.0, math.cos(az))
         back = max(0.0, -math.cos(az))
@@ -127,32 +144,37 @@ class CameraAngleNode:
         s = front + back + left + right
         if s > 0:
             front /= s; back /= s; left /= s; right /= s
-
-        az_budget = (1.0 - abs(float(pos_y))) * w_az
-        dz_r = w_az_dz
+        # 极向门控：|pos_y|>0.9 时才削减方位预算
+        AZ_POLE = 0.9
+        az_gate = max(0.0, min(1.0, (1.0 - abs(pos_y)) / (1.0 - AZ_POLE)))
+        az_budget = w_az * az_gate
         for name, ratio in (("front", front), ("back", back), ("left", left), ("right", right)):
             w = ratio * az_budget
-            if ratio <= 0 or w < dz_r: continue
-            w = min(wmax, max(0.1, w))
-            parts.append(f"({tags['azimuth']['directions'][name]['tag']}:{self._fmt_weight(w)})")
+            if ratio <= 0 or w < dz: continue
+            w = min(wmax, max(wmin, w))
+            parts.extend(self._emit_weighted(tags["azimuth"]["directions"][name]["tag"], w))
 
-        elev_key = self._elevation_key(float(pos_y))
+        # ---------- 高度 ----------
+        elev_key = self._elevation_key(pos_y)
         elev_cat = tags["elevation"]["categories"].get(elev_key)
         if elev_cat and elev_cat.get("tag"):
-            ew = abs(float(pos_y)) * (1.0 + w_ma * w_el)
-            if ew >= dz_r:
-                ew = min(wmax, max(0.1, ew))
-                parts.append(f"({elev_cat['tag']}:{self._fmt_weight(ew)})")
+            ew = abs(pos_y) * (1.0 + w_ma * w_el)
+            if ew >= dz:
+                ew = min(wmax, max(wmin, ew))
+                parts.extend(self._emit_weighted(elev_cat["tag"], ew))
 
-        dist_key = self._distance_key(float(pos_z))
+        # ---------- 距离 ----------
+        dist_key = self._distance_key(pos_z)
         dist_cat = tags["distance"]["categories"].get(dist_key)
         if dist_cat and dist_cat.get("tag"):
             dw = 1.0 + w_ma * w_di
-            parts.append(f"({dist_cat['tag']}:{self._fmt_weight(min(wmax, max(0.1, dw)))})")
+            parts.extend(self._emit_weighted(dist_cat["tag"], min(wmax, max(0.1, dw))))
 
+        # ---------- 倾斜 ----------
         if float(roll) > 0:
-            parts.append(f"({tags['tilt']['dutch_tag']}:{self._fmt_weight(float(roll) * 10.0)})")
+            parts.extend(self._emit_weighted(tags["tilt"]["dutch_tag"], float(roll) * 10.0))
 
+        # ---------- 额外提示词 ----------
         for key in ("lens", "dof", "movement", "composition", "style"):
             e = extras.get(key)
             if not e or not e.get("enabled"): continue
