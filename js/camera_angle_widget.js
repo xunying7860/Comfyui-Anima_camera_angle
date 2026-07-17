@@ -28,7 +28,7 @@ const LABEL_MAP = {
 // ============================================================
 const DC = {
   weight_min: 0.1, weight_max: 10,
-  azimuth: { weight: 10, deadzone_ratio: 0.2, directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
+  azimuth: { weight: 10, deadzone_ratio: 0.05, directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
   elevation: { extra: 10, categories: { bird: { tag: "bird's-eye view" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "worm's-eye view" } } },
   distance: { extra: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
   tilt: { deadzone: 0.15, extra: 0, dutch_tag: "dutch angle" }, extra_master: 1,
@@ -46,7 +46,7 @@ function emitWeighted(tag, w, wmin, wmax) {
   return splitTags(tag).map(t => `(${t}:${fmt(clamp(w, wmin, wmax))})`);
 }
 function computePrompt(px, py, pz, roll, c) {
-  const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 5, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.2;
+  const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 5, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.05;
   // 方位（极向门控）
   const az = px * Math.PI;
   const d = { front: Math.max(0, Math.cos(az)), back: Math.max(0, -Math.cos(az)), right: Math.max(0, Math.sin(az)), left: Math.max(0, -Math.sin(az)) };
@@ -202,6 +202,15 @@ app.registerExtension({
       scene.add(distH);
       const distG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0xFFB800, transparent: true, opacity: 0.25 }));
       scene.add(distG);
+      const DIST_GEARS = [-0.85, -0.45, 0.0, 0.45, 0.85]; // 远景→特写 5 档
+      function snapDist() {
+        let idx = 0;
+        for (let i = 1; i < DIST_GEARS.length; i++) {
+          if (Math.abs(S.pz - DIST_GEARS[i]) < Math.abs(S.pz - DIST_GEARS[idx])) idx = i;
+        }
+        S.pz = DIST_GEARS[idx];
+        S.dist = S.pz * 4.5 + 5.5;
+      }
       let distTube = null;
 
       // ---- 参数状态 ----
@@ -228,6 +237,7 @@ app.registerExtension({
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = toFixed2(gw("roll")?.value ?? 0);
         // elevation -30°~60° → py -1~1, dist 1~10 → pz -1~1
         S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
+        snapDist(); // 吸入距离档位
       }
       readW(); setTimeout(readW, 200);
 
@@ -243,6 +253,7 @@ app.registerExtension({
         S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = parseFloat(gw("roll")?.value ?? 0);
         S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
+        snapDist();
         const ar = S.azimuth * Math.PI / 180, er = S.elevation * Math.PI / 180, vd = 2.6 - (S.dist / 10) * 2.0;
         const cx = vd * Math.sin(ar) * Math.cos(er), cy = CENTER.y + vd * Math.sin(er), cz = vd * Math.cos(ar) * Math.cos(er);
         camCone.position.set(cx, cy, cz); camCone.lookAt(CENTER); camCone.rotateX(Math.PI / 2);
@@ -305,11 +316,23 @@ app.registerExtension({
         } else if (S.tgt === "el") {
           plane.setFromNormalAndCoplanarPoint(new THREE.Vector3(1, 0, 0), new THREE.Vector3(-0.8, 0, 0));
           if (ray.ray.intersectPlane(plane, pt)) { let a = Math.atan2(pt.y - CENTER.y, pt.z) * 180 / Math.PI; a = Math.max(-30, Math.min(60, a)); S.elevation = a; S.py = (a - 15) / 45; syncN(); }
-        } else if (S.tgt === "dist") { S.dist = Math.max(1, Math.min(10, S.dist + (e.movementY || 0) * 0.05)); S.pz = (S.dist - 5.5) / 4.5; syncN(); }
+        } else if (S.tgt === "dist") { S.dist = Math.max(1, Math.min(10, S.dist + (e.movementY || 0) * 0.05)); S.pz = (S.dist - 5.5) / 4.5; }
       });
-      renderer.domElement.addEventListener("pointerup", () => { if (!S.dragging) return; S.dragging = false; S.tgt = null; if (S.hovered) setScale(S.hovered, 1.0); });
+      renderer.domElement.addEventListener("pointerup", () => {
+        if (!S.dragging) return;
+        if (S.tgt === "dist") snapDist();
+        S.dragging = false; S.tgt = null; if (S.hovered) setScale(S.hovered, 1.0); syncN();
+      });
       renderer.domElement.addEventListener("pointercancel", () => { S.dragging = false; S.tgt = null; });
-      renderer.domElement.addEventListener("wheel", e => { e.preventDefault(); S.dist = clamp(S.dist - e.deltaY * 0.01, 1, 10); S.pz = (S.dist - 5.5) / 4.5; syncN(); }, { passive: false });
+      renderer.domElement.addEventListener("wheel", e => {
+        e.preventDefault();
+        // 滚轮切换距离档位：上滚远景，下滚特写
+        let idx = DIST_GEARS.indexOf(S.pz);
+        if (idx < 0) { snapDist(); idx = DIST_GEARS.indexOf(S.pz); }
+        const dir = e.deltaY > 0 ? 1 : -1;
+        const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, (idx >= 0 ? idx : 2) + dir));
+        S.pz = DIST_GEARS[ni]; S.dist = S.pz * 4.5 + 5.5; syncN();
+      }, { passive: false });
  
       // ---- 按钮行 ----
       const bRow = document.createElement("div"); bRow.className = "btn-r"; container.appendChild(bRow);

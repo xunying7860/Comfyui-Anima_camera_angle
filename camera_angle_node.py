@@ -112,7 +112,7 @@ class CameraAngleNode:
 
         # 固定权重参数
         w_az = 10.0; w_max = 10.0; w_ma = 1.0; w_el = 10.0
-        w_di = 0.0; w_az_dz = 0.2
+        w_di = 0.0; w_az_dz = 0.05
 
         # 加载标签（默认值 + _tags_json 覆盖）
         tags = {}
