@@ -256,11 +256,11 @@ app.registerExtension({
         const ad = S.px * 180;
         hDir.textContent = Math.abs(S.px) > 0.85 ? "背面 · 180°" : S.px < -0.05 ? "左 " + Math.abs(ad).toFixed(0) + "°" : S.px > 0.05 ? "右 " + ad.toFixed(0) + "°" : "正面 · 0°";
         hRoll.textContent = S.rv > 0 ? "倾斜: " + (S.rv * 10).toFixed(2) : "";
-        // 合并自定义标签到预览配置（从内存 TAGS 直接读取，实时响应）
-        S.cfg.azimuth = TAGS.azimuth;
-        S.cfg.elevation = TAGS.elevation;
-        S.cfg.distance = TAGS.distance;
-        S.cfg.tilt = TAGS.tilt;
+        // 合并自定义标签到预览配置（仅覆盖 tag 字段，保留权重/死区）
+        if (TAGS.azimuth && TAGS.azimuth.directions) S.cfg.azimuth.directions = TAGS.azimuth.directions;
+        if (TAGS.elevation && TAGS.elevation.categories) S.cfg.elevation.categories = TAGS.elevation.categories;
+        if (TAGS.distance && TAGS.distance.categories) S.cfg.distance.categories = TAGS.distance.categories;
+        if (TAGS.tilt && TAGS.tilt.dutch_tag) S.cfg.tilt.dutch_tag = TAGS.tilt.dutch_tag;
         if (previewEl) previewEl.value = computePrompt(S.px, S.py, S.pz, S.rv, S.cfg);
       }
 
