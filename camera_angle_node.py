@@ -15,9 +15,9 @@ DEFAULT_TAGS = {
     },
     "elevation": {
         "categories": {
-            "bird": {"tag": "extreme high-angle shot"}, "high": {"tag": "high angle"},
-            "eye": {"tag": "eye-level"}, "low": {"tag": "low angle"},
-            "worm": {"tag": "extreme low-angle shot"},
+            "high": {"tag": "high angle"},
+            "eye": {"tag": "eye-level"},
+            "low": {"tag": "low angle"},
         },
         "enabled": True, "extra": 0.0,
     },
@@ -59,9 +59,9 @@ class CameraAngleNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "pos_x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
-                "pos_y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
-                "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
+                "pos_x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                "pos_y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01}),
+                "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
                 "roll": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.10}),
                 "_tags_json": ("STRING", {"multiline": False, "default": "{}"}),
             },
@@ -89,11 +89,9 @@ class CameraAngleNode:
 
     @staticmethod
     def _elevation_key(y):
-        if y > 0.7: return "bird"
         if y > 0.2: return "high"
         if y >= -0.2: return "eye"
-        if y >= -0.7: return "low"
-        return "worm"
+        return "low"
 
     @staticmethod
     def _distance_key(z):
@@ -163,17 +161,17 @@ class CameraAngleNode:
                 w = min(wmax + max(0.0, az_extra * em), max(wmin, w))
                 parts.extend(self._emit_weighted(az_tag["directions"][name]["tag"], w))
 
-        # ---------- 高度 ----------
+        # ---------- 高度（3 档） ----------
         el_tag = tags.get("elevation", {})
         if el_tag.get("enabled", True):
             elev_key = self._elevation_key(pos_y)
             elev_cat = el_tag.get("categories", {}).get(elev_key)
             if elev_cat and elev_cat.get("tag"):
-                # 分级乘数：鸟瞰/虫瞰=4，俯视/仰视=10，平视=15
-                el_base_mult = 4.0 if elev_key in ("bird", "worm") else (10.0 if elev_key in ("high", "low") else 15.0)
+                el_base_mult = 15.0 if elev_key == "eye" else 10.0
                 ew = abs(pos_y) * el_base_mult + em * el_extra
                 if ew >= az_dz:
-                    ew = min(wmax + max(0.0, el_extra * em), max(wmin, ew))
+                    cap = wmax + max(0.0, el_extra * em)
+                    ew = min(cap, max(wmin, ew))
                     parts.extend(self._emit_weighted(elev_cat["tag"], ew))
 
         # ---------- 距离 ----------
@@ -201,6 +199,19 @@ class CameraAngleNode:
                 parts.append(f"({val}:{self._fmt_weight(e.get('weight', 1.3))})")
             else:
                 parts.append(val)
+        # 从 extra_config 解析 extreme 标签（直通，无 pos_y 限制）
+        if extra_config:
+            try:
+                ec = json.loads(extra_config)
+                if "extreme_high" in ec:
+                    eh = ec["extreme_high"]
+                    if isinstance(eh, dict) and eh.get("tag", "").strip():
+                        parts.extend(self._emit_weighted(eh["tag"], float(eh.get("weight", 10.0))))
+                if "extreme_low" in ec:
+                    el = ec["extreme_low"]
+                    if isinstance(el, dict) and el.get("tag", "").strip():
+                        parts.extend(self._emit_weighted(el["tag"], float(el.get("weight", 10.0))))
+            except Exception: pass
 
         return (", ".join(parts),)
 

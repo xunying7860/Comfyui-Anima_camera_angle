@@ -29,7 +29,7 @@ const LABEL_MAP = {
 const DC = {
   weight_min: 0.1, weight_max: 10,
   azimuth: { weight: 10, deadzone_ratio: 0.05, extra: 0, enabled: true, weight_max: 0, directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
-  elevation: { categories: { bird: { tag: "extreme high-angle shot" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "extreme low-angle shot" } }, enabled: true, extra: 0 },
+  elevation: { extra: 0, enabled: true, weight_max: 0, categories: { high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" } } },
   distance: { extra: 0, enabled: true, weight_max: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
   tilt: { deadzone: 0.15, extra: 0, dutch_tag: "dutch angle", enabled: true, weight_max: 0 }, extra_master: 1,
   extras: { lens: { enabled: false, value: "85mm lens" }, dof: { enabled: false, value: "shallow depth of field", weight: 1.3 }, movement: { enabled: false, value: "handheld camera" }, composition: { enabled: false, value: "rule of thirds" }, style: { enabled: false, value: "cinematic" } },
@@ -60,8 +60,8 @@ function computePrompt(px, py, pz, roll, c) {
   }
   // 高度
   if (c.elevation.enabled !== false) {
-    const ek = py > 0.7 ? "bird" : py > 0.2 ? "high" : py >= -0.2 ? "eye" : py >= -0.7 ? "low" : "worm";
-    const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const elMult = {"bird":4,"worm":5,"high":10,"low":10}[ek] || 15; const ew = Math.abs(py) * elMult + em * (parseFloat(c.elevation.extra) || 0); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax + Math.max(0, (parseFloat(c.elevation.extra) || 0) * em))); }
+    const ek = py > 0.2 ? "high" : py >= -0.2 ? "eye" : "low";
+    const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const elMult = ek === "eye" ? 15 : 10; const ew = Math.abs(py) * elMult + em * (parseFloat(c.elevation.extra) || 0); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax + Math.max(0, (parseFloat(c.elevation.extra) || 0) * em))); }
   }
   // 距离
   if (c.distance.enabled !== false) {
@@ -170,65 +170,50 @@ app.registerExtension({
       const wrap = document.createElement("div"); wrap.className = "an3-cw"; container.prepend(wrap);
       wrap.appendChild(renderer.domElement);
       const ol = document.createElement("div"); ol.className = "an3-ol";
-      ol.innerHTML = '<span class="h">拖拽</span><div class="i"><div class="d">正面 · 0°</div><div class="r" style="color:#c792ea;font-family:monospace"></div><div class="m" style="cursor:pointer;font-size:11px;margin-top:2px" title="切换 UI 模式">🔄</div></div>';
+      ol.innerHTML = '<span class="h">拖拽</span><div class="i"><div class="d">正面 · 0°</div><div class="r" style="color:#c792ea;font-family:monospace"></div></div>';
       wrap.appendChild(ol);
-      const hHint = ol.querySelector(".h"), hDir = ol.querySelector(".d"), hRoll = ol.querySelector(".r"), hMode = ol.querySelector(".m");
-
-      // UI 模式切换（0=新/彩色，1=旧/精简）
-      let uiMode = TAGS.ui_mode ?? 0;
-      function applyUIMode(mode) {
-        uiMode = mode; TAGS.ui_mode = mode; syncTagsToWidget();
-        decor.forEach(d => { if (d && typeof d.visible !== 'undefined') d.visible = mode === 0; });
-        hMode.textContent = mode === 0 ? '🔄' : '🎨';
-        hMode.title = mode === 0 ? '切换到精简模式' : '切换到彩色模式';
-      }
-      hMode.onclick = () => applyUIMode(uiMode === 0 ? 1 : 0);
-      applyUIMode(uiMode); // 初始化
+      const hHint = ol.querySelector(".h"), hDir = ol.querySelector(".d"), hRoll = ol.querySelector(".r");
 
       scene.add(new THREE.AmbientLight(0xffffff, 0.4));
       const ml = new THREE.DirectionalLight(0xffffff, 0.8); ml.position.set(5, 10, 5); scene.add(ml);
-      const fl = new THREE.DirectionalLight(0xE93D82, 0.3); fl.position.set(-5, 5, -5); scene.add(fl); decor.push(fl);
+      const fl = new THREE.DirectionalLight(0xE93D82, 0.3); fl.position.set(-5, 5, -5); scene.add(fl)
 
       const CENTER = new THREE.Vector3(0, 0.5, 0), AZ_R = 1.8, EL_R = 1.4;
       scene.add(new THREE.GridHelper(5, 20, 0x1a1a2e, 0x12121a));
-      // 装饰元素集合（旧模式可隐藏）
-      const decor = [];
 
       const cardMat = new THREE.MeshBasicMaterial({ color: 0x3a3a4a });
       const card = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 0.02), cardMat);
       card.position.copy(CENTER); scene.add(card);
       const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.2, 1.2, 0.02)), new THREE.LineBasicMaterial({ color: 0xE93D82 }));
-      frame.position.copy(CENTER); scene.add(frame); decor.push(frame);
+      frame.position.copy(CENTER); scene.add(frame)
       const gr = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.58, 64), new THREE.MeshBasicMaterial({ color: 0xE93D82, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
-      gr.position.set(0, 0.01, 0); gr.rotation.x = -Math.PI / 2; scene.add(gr); decor.push(gr);
+      gr.position.set(0, 0.01, 0); gr.rotation.x = -Math.PI / 2; scene.add(gr)
 
       const camCone = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.4, 4), new THREE.MeshStandardMaterial({ color: 0xE93D82, emissive: 0xE93D82, emissiveIntensity: 0.5 }));
       scene.add(camCone);
       const camGlow = new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff6ba8, transparent: true, opacity: 0.8 }));
-      scene.add(camGlow); decor.push(camGlow);
+      scene.add(camGlow)
 
       const azRing = new THREE.Mesh(new THREE.TorusGeometry(AZ_R, 0.04, 16, 100), new THREE.MeshBasicMaterial({ color: 0xE93D82, transparent: true, opacity: 0.7 }));
-      azRing.rotation.x = Math.PI / 2; azRing.position.y = 0.02; scene.add(azRing); decor.push(azRing);
+      azRing.rotation.x = Math.PI / 2; azRing.position.y = 0.02; scene.add(azRing);
       const azH = new THREE.Mesh(new THREE.SphereGeometry(0.16, 32, 32), new THREE.MeshStandardMaterial({ color: 0xE93D82, emissive: 0xE93D82, emissiveIntensity: 0.6 }));
-      scene.add(azH); decor.push(azH);
+      scene.add(azH);
       const azG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0xE93D82, transparent: true, opacity: 0.2 }));
-      scene.add(azG); decor.push(azG);
+      scene.add(azG)
 
       const arcPts = []; for (let i = 0; i <= 32; i++) { const a = (-30 + 90 * i / 32) * Math.PI / 180; arcPts.push(new THREE.Vector3(-0.8, EL_R * Math.sin(a) + CENTER.y, EL_R * Math.cos(a))); }
       const arc = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(arcPts), 32, 0.04, 8, false), new THREE.MeshBasicMaterial({ color: 0x00FFD0, transparent: true, opacity: 0.8 }));
-      scene.add(arc); decor.push(arc);
+      scene.add(arc);
       const elH = new THREE.Mesh(new THREE.SphereGeometry(0.16, 32, 32), new THREE.MeshStandardMaterial({ color: 0x00FFD0, emissive: 0x00FFD0, emissiveIntensity: 0.6 }));
-      scene.add(elH); decor.push(elH);
+      scene.add(elH);
       const elG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0x00FFD0, transparent: true, opacity: 0.2 }));
-      scene.add(elG); decor.push(elG);
+      scene.add(elG)
 
       const distH = new THREE.Mesh(new THREE.SphereGeometry(0.15, 32, 32), new THREE.MeshStandardMaterial({ color: 0xFFB800, emissive: 0xFFB800, emissiveIntensity: 0.7 }));
-      scene.add(distH); decor.push(distH);
+      scene.add(distH);
       const distG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0xFFB800, transparent: true, opacity: 0.25 }));
-      scene.add(distG); decor.push(distG);
+      scene.add(distG)
       const DIST_GEARS = [-0.85, -0.52, -0.17, 0.10, 0.45, 0.85];
-      // 确保 UI 模式应用到已创建的装饰元素
-      decor.forEach(d => { if (d && typeof d.visible !== 'undefined') d.visible = uiMode === 0; });
       function snapDist() {
         let idx = 0;
         for (let i = 1; i < DIST_GEARS.length; i++) {
@@ -245,15 +230,15 @@ app.registerExtension({
       // ---- 标签数据 TAGS（BSK 风格：每轴 extra/weight，无 panel_extra） ----
       const TAGS = {
         azimuth: { directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } }, enabled: true, weight: 10, extra: 0, deadzone_ratio: 0.05 },
-        elevation: { categories: { bird: { tag: "extreme high-angle shot" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "extreme low-angle shot" } }, enabled: true, extra: 0 },
+        elevation: { extra: 0, enabled: true, weight_max: 0, categories: { high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" } } },
         distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } }, enabled: true, extra: 0 },
         tilt: { dutch_tag: "dutch angle", enabled: true, extra: 0, deadzone: 0.15 },
-        extra_master: 1, weight_max: 10, weight_min: 0.1, ui_mode: 0,
+        extra_master: 1, weight_max: 10, weight_min: 0.1,
       };
       function restoreTags() {
         const rw = gw("_tags_json");
-        if (rw && rw.value && rw.value !== "{}") {
-          try {
+        try {
+          if (rw && rw.value && rw.value !== "{}") {
             const d = JSON.parse(rw.value);
             if (typeof d === 'object' && d) {
               // 安全合并，保留 TAGS 默认值（兼容旧工作流缺少 weight/extra 等字段）
@@ -268,8 +253,8 @@ app.registerExtension({
                 }
               })(TAGS, d);
             }
-          } catch(_) {}
-        }
+          }
+        } catch(_) {}
         syncTagsToWidget();
         // 兜底：确保关键字段不缺失
         if (TAGS.elevation.extra === undefined || TAGS.elevation.extra === null) TAGS.elevation.extra = 0;
@@ -278,9 +263,6 @@ app.registerExtension({
         if (TAGS.azimuth.extra === undefined || TAGS.azimuth.extra === null) TAGS.azimuth.extra = 0;
         if (TAGS.azimuth.weight === undefined || TAGS.azimuth.weight === null) TAGS.azimuth.weight = 10;
         if (TAGS.extra_master === undefined || TAGS.extra_master === null) TAGS.extra_master = 1;
-        // 恢复 UI 模式
-        if (typeof hMode !== 'undefined' && hMode) applyUIMode(TAGS.ui_mode ?? 0);
-        // 如果标签面板收起但节点高度异常大（来自旧保存），恢复基础高度
         if (tagPanel && tagPanel.style.display === "none" && node.size[1] > 600) {
           node.setSize([node.size[0], Math.max(580, node.size[1] - TAG_PANEL_H)]);
           if (node.graph) node.graph.setDirtyCanvas(true, true);
@@ -394,7 +376,6 @@ app.registerExtension({
       }
 
       let alive = true;
-
       function anim() {
         if (!alive) return;
         S.animId = requestAnimationFrame(anim);
@@ -404,7 +385,7 @@ app.registerExtension({
       }
       requestAnimationFrame(anim);
 
-      // ---- 鼠标交互 ----
+      // ---- Three.js 鼠标交互 ----
       const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
       const hList = [
         { m: azH, g: azG, n: "az" }, { m: elH, g: elG, n: "el" }, { m: distH, g: distG, n: "dist" },
@@ -480,11 +461,9 @@ app.registerExtension({
           ["右侧", "azimuth > directions > right > tag", "facing left"],
         ]],
         ["高度", [
-          ["极限俯视", "elevation > categories > bird > tag", "extreme high-angle shot"],
           ["俯视", "elevation > categories > high > tag", "high angle"],
           ["平视", "elevation > categories > eye > tag", "eye-level"],
           ["仰视", "elevation > categories > low > tag", "low angle"],
-          ["极限仰视", "elevation > categories > worm > tag", "extreme low-angle shot"],
         ]],
         ["距离", [
           ["特写", "distance > categories > ecu > tag", "extreme close-up"],
