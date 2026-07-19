@@ -13,7 +13,7 @@ const LABEL_MAP = {
   elevation_extra: "高度额外", distance_extra: "距离额外", tilt_extra: "倾斜额外",
   azimuth_deadzone: "方位死区", tilt_deadzone: "倾斜死区",
   tag_front: "前方", tag_back: "后方", tag_left: "左侧", tag_right: "右侧",
-  tag_bird: "鸟瞰", tag_high: "俯视", tag_eye: "平视", tag_low: "仰视", tag_worm: "虫瞰",
+  tag_bird: "极限俯视", tag_high: "俯视", tag_eye: "平视", tag_low: "仰视", tag_worm: "极限仰视",
   tag_ecu: "特写", tag_cu: "近景", tag_medium: "中景", tag_full: "全身", tag_wide: "远景",
   tag_dutch: "倾斜",
   lens_enabled: "启用镜头", lens_value: "镜头/焦距",
@@ -24,14 +24,14 @@ const LABEL_MAP = {
 };
 
 // ============================================================
-// 1. 工具函数
+// 1. 默认配置 & 工具
 // ============================================================
 const DC = {
   weight_min: 0.1, weight_max: 10,
-  azimuth: { weight: 10, deadzone_ratio: 0.05, directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
-  elevation: { extra: 10, categories: { bird: { tag: "bird's-eye view" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "worm's-eye view" } } },
-  distance: { extra: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
-  tilt: { deadzone: 0.15, extra: 0, dutch_tag: "dutch angle" }, extra_master: 1,
+  azimuth: { weight: 10, deadzone_ratio: 0.05, extra: 0, enabled: true, weight_max: 0, directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
+  elevation: { categories: { bird: { tag: "extreme high-angle shot" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "extreme low-angle shot" } }, enabled: true, extra: 0 },
+  distance: { extra: 0, enabled: true, weight_max: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
+  tilt: { deadzone: 0.15, extra: 0, dutch_tag: "dutch angle", enabled: true, weight_max: 0 }, extra_master: 1,
   extras: { lens: { enabled: false, value: "85mm lens" }, dof: { enabled: false, value: "shallow depth of field", weight: 1.3 }, movement: { enabled: false, value: "handheld camera" }, composition: { enabled: false, value: "rule of thirds" }, style: { enabled: false, value: "cinematic" } },
 };
 function toFixed2(v) { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; }
@@ -46,22 +46,30 @@ function emitWeighted(tag, w, wmin, wmax) {
   return splitTags(tag).map(t => `(${t}:${fmt(clamp(w, wmin, wmax))})`);
 }
 function computePrompt(px, py, pz, roll, c) {
-  const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 5, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.05;
-  // 方位（极向门控）
-  const az = px * Math.PI;
-  const d = { front: Math.max(0, Math.cos(az)), back: Math.max(0, -Math.cos(az)), right: Math.max(0, Math.sin(az)), left: Math.max(0, -Math.sin(az)) };
-  const s = d.front + d.back + d.right + d.left; if (s > 0) { d.front /= s; d.back /= s; d.right /= s; d.left /= s; }
-  const AZ_POLE = 0.9, azGate = Math.max(0, Math.min(1, (1 - Math.abs(py)) / (1 - AZ_POLE)));
-  const azBudget = (parseFloat(c.azimuth.weight) || 1) * azGate;
-  for (const [k, nv] of Object.entries(d)) { const w = nv * azBudget; if (nv <= 0 || w < dz) continue; p.push(...emitWeighted(c.azimuth.directions[k].tag, w, wmin, wmax)); }
+  const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 10, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.05;
+  const em = parseFloat(c.extra_master) || 1;
+  // 方位
+  if (c.azimuth.enabled !== false) {
+    const az = px * Math.PI;
+    const d = { front: Math.max(0, Math.cos(az)), back: Math.max(0, -Math.cos(az)), right: Math.max(0, Math.sin(az)), left: Math.max(0, -Math.sin(az)) };
+    const s = d.front + d.back + d.right + d.left; if (s > 0) { d.front /= s; d.back /= s; d.right /= s; d.left /= s; }
+    const AZ_POLE = 0.9, azGate = Math.max(0, Math.min(1, (1 - Math.abs(py)) / (1 - AZ_POLE)));
+    const azBudget = ((parseFloat(c.azimuth.weight) || 1) + (parseFloat(c.azimuth.extra) || 0) * em) * azGate;
+    const azCap = 10 + Math.max(0, (parseFloat(c.azimuth.extra) || 0) * em);
+    for (const [k, nv] of Object.entries(d)) { const w = nv * azBudget; if (nv <= 0 || w < dz) continue; p.push(...emitWeighted(c.azimuth.directions[k].tag, w, wmin, azCap)); }
+  }
   // 高度
-  const ek = py > 0.7 ? "bird" : py > 0.2 ? "high" : py >= -0.2 ? "eye" : py >= -0.7 ? "low" : "worm";
-  const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const ew = Math.abs(py) * (1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.elevation.extra) || 0)); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax)); }
+  if (c.elevation.enabled !== false) {
+    const ek = py > 0.7 ? "bird" : py > 0.2 ? "high" : py >= -0.2 ? "eye" : py >= -0.7 ? "low" : "worm";
+    const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const elMult = {"bird":4,"worm":5,"high":10,"low":10}[ek] || 15; const ew = Math.abs(py) * elMult + em * (parseFloat(c.elevation.extra) || 0); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax + Math.max(0, (parseFloat(c.elevation.extra) || 0) * em))); }
+  }
   // 距离
-  const dk = pz > 0.7 ? "ecu" : pz > 0.2 ? "cu" : pz > 0.0 ? "medium" : pz > -0.35 ? "cowboy_shot" : pz >= -0.7 ? "full" : "wide";
-  const di = c.distance.categories[dk]; if (di && di.tag) p.push(...emitWeighted(di.tag, 1 + (parseFloat(c.extra_master) || 1) * (parseFloat(c.distance.extra) || 0), 0.1, wmax));
+  if (c.distance.enabled !== false) {
+    const dk = pz > 0.7 ? "ecu" : pz > 0.2 ? "cu" : pz > 0.0 ? "medium" : pz > -0.35 ? "cowboy_shot" : pz >= -0.7 ? "full" : "wide";
+    const di = c.distance.categories[dk]; if (di && di.tag) { const dw = 1 + em * (parseFloat(c.distance.extra) || 0); p.push(...emitWeighted(di.tag, dw, 0.1, wmax + Math.max(0, (parseFloat(c.distance.extra) || 0) * em))); }
+  }
   // 倾斜
-  if (roll > 0) p.push(...emitWeighted(c.tilt.dutch_tag, roll * 10, 0.1, wmax));
+  if (c.tilt.enabled !== false && roll > 0) { const tw = 1 + em * (parseFloat(c.tilt.extra) || 0); p.push(...emitWeighted(c.tilt.dutch_tag, tw, 0.1, wmax + Math.max(0, (parseFloat(c.tilt.extra) || 0) * em))); }
   // 额外提示词
   const ex = c.extras || {}; for (const k of ["lens", "dof", "movement", "composition", "style"]) { const e = ex[k]; if (e && e.enabled && e.value && e.value.trim()) { p.push(k === "dof" ? `(${e.value.trim()}:${fmt(e.weight || 1)})` : e.value.trim()); } }
   return p.join(", ");
@@ -86,6 +94,10 @@ function computePrompt(px, py, pz, roll, c) {
     ".an3-w .btn-r button:hover{background:#444}",
     ".an3-w .pr{width:100%;min-height:28px;max-height:60px;resize:vertical;font-size:10px;background:rgba(0,0,0,0.25);border:1px solid #444;color:#fff3b7;border-radius:4px;padding:3px 5px;font-family:monospace;box-sizing:border-box;overflow-x:hidden;word-break:break-all}",
     ".an3-w .ph{font-size:9px;color:rgba(255,255,255,0.3);text-align:center}",
+    ".an3-w .ctrl-panel label{font-size:9px;color:rgba(255,255,255,0.7);white-space:nowrap}",
+    ".an3-w .ctrl-panel input[type=range]{flex:1;min-width:0;height:10px}",
+    ".an3-w .ctrl-panel input[type=checkbox]{accent-color:#667eea;width:14px;height:14px}",
+    ".an3-w .ctrl-panel .val{width:30px;text-align:right;font-size:9px;color:rgba(255,255,255,0.5);font-family:monospace}",
   ].join("\n");
   document.head.appendChild(el);
 })();
@@ -142,7 +154,6 @@ app.registerExtension({
       // ============= Three.js 场景 =============
       let CW = Math.max(container.clientWidth || 360, 280);
       let CH = Math.round(CW * 500 / 560);
-      // 监听容器尺寸变化，调整画布
       const ro = new ResizeObserver(() => {
         const nw = Math.max(container.clientWidth || 280, 280);
         if (nw !== CW) { CW = nw; CH = Math.round(CW * 500 / 560);
@@ -159,50 +170,65 @@ app.registerExtension({
       const wrap = document.createElement("div"); wrap.className = "an3-cw"; container.prepend(wrap);
       wrap.appendChild(renderer.domElement);
       const ol = document.createElement("div"); ol.className = "an3-ol";
-      ol.innerHTML = '<span class="h">拖拽</span><div class="i"><div class="d">正面 · 0°</div><div class="r" style="color:#c792ea;font-family:monospace"></div></div>';
+      ol.innerHTML = '<span class="h">拖拽</span><div class="i"><div class="d">正面 · 0°</div><div class="r" style="color:#c792ea;font-family:monospace"></div><div class="m" style="cursor:pointer;font-size:11px;margin-top:2px" title="切换 UI 模式">🔄</div></div>';
       wrap.appendChild(ol);
-      const hHint = ol.querySelector(".h"), hDir = ol.querySelector(".d"), hRoll = ol.querySelector(".r");
+      const hHint = ol.querySelector(".h"), hDir = ol.querySelector(".d"), hRoll = ol.querySelector(".r"), hMode = ol.querySelector(".m");
+
+      // UI 模式切换（0=新/彩色，1=旧/精简）
+      let uiMode = TAGS.ui_mode ?? 0;
+      function applyUIMode(mode) {
+        uiMode = mode; TAGS.ui_mode = mode; syncTagsToWidget();
+        decor.forEach(d => { if (d && typeof d.visible !== 'undefined') d.visible = mode === 0; });
+        hMode.textContent = mode === 0 ? '🔄' : '🎨';
+        hMode.title = mode === 0 ? '切换到精简模式' : '切换到彩色模式';
+      }
+      hMode.onclick = () => applyUIMode(uiMode === 0 ? 1 : 0);
+      applyUIMode(uiMode); // 初始化
 
       scene.add(new THREE.AmbientLight(0xffffff, 0.4));
       const ml = new THREE.DirectionalLight(0xffffff, 0.8); ml.position.set(5, 10, 5); scene.add(ml);
-      const fl = new THREE.DirectionalLight(0xE93D82, 0.3); fl.position.set(-5, 5, -5); scene.add(fl);
+      const fl = new THREE.DirectionalLight(0xE93D82, 0.3); fl.position.set(-5, 5, -5); scene.add(fl); decor.push(fl);
 
       const CENTER = new THREE.Vector3(0, 0.5, 0), AZ_R = 1.8, EL_R = 1.4;
       scene.add(new THREE.GridHelper(5, 20, 0x1a1a2e, 0x12121a));
+      // 装饰元素集合（旧模式可隐藏）
+      const decor = [];
 
       const cardMat = new THREE.MeshBasicMaterial({ color: 0x3a3a4a });
       const card = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 0.02), cardMat);
       card.position.copy(CENTER); scene.add(card);
       const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.2, 1.2, 0.02)), new THREE.LineBasicMaterial({ color: 0xE93D82 }));
-      frame.position.copy(CENTER); scene.add(frame);
+      frame.position.copy(CENTER); scene.add(frame); decor.push(frame);
       const gr = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.58, 64), new THREE.MeshBasicMaterial({ color: 0xE93D82, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }));
-      gr.position.set(0, 0.01, 0); gr.rotation.x = -Math.PI / 2; scene.add(gr);
+      gr.position.set(0, 0.01, 0); gr.rotation.x = -Math.PI / 2; scene.add(gr); decor.push(gr);
 
       const camCone = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.4, 4), new THREE.MeshStandardMaterial({ color: 0xE93D82, emissive: 0xE93D82, emissiveIntensity: 0.5 }));
       scene.add(camCone);
       const camGlow = new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff6ba8, transparent: true, opacity: 0.8 }));
-      scene.add(camGlow);
+      scene.add(camGlow); decor.push(camGlow);
 
       const azRing = new THREE.Mesh(new THREE.TorusGeometry(AZ_R, 0.04, 16, 100), new THREE.MeshBasicMaterial({ color: 0xE93D82, transparent: true, opacity: 0.7 }));
-      azRing.rotation.x = Math.PI / 2; azRing.position.y = 0.02; scene.add(azRing);
+      azRing.rotation.x = Math.PI / 2; azRing.position.y = 0.02; scene.add(azRing); decor.push(azRing);
       const azH = new THREE.Mesh(new THREE.SphereGeometry(0.16, 32, 32), new THREE.MeshStandardMaterial({ color: 0xE93D82, emissive: 0xE93D82, emissiveIntensity: 0.6 }));
-      scene.add(azH);
+      scene.add(azH); decor.push(azH);
       const azG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0xE93D82, transparent: true, opacity: 0.2 }));
-      scene.add(azG);
+      scene.add(azG); decor.push(azG);
 
       const arcPts = []; for (let i = 0; i <= 32; i++) { const a = (-30 + 90 * i / 32) * Math.PI / 180; arcPts.push(new THREE.Vector3(-0.8, EL_R * Math.sin(a) + CENTER.y, EL_R * Math.cos(a))); }
       const arc = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(arcPts), 32, 0.04, 8, false), new THREE.MeshBasicMaterial({ color: 0x00FFD0, transparent: true, opacity: 0.8 }));
-      scene.add(arc);
+      scene.add(arc); decor.push(arc);
       const elH = new THREE.Mesh(new THREE.SphereGeometry(0.16, 32, 32), new THREE.MeshStandardMaterial({ color: 0x00FFD0, emissive: 0x00FFD0, emissiveIntensity: 0.6 }));
-      scene.add(elH);
+      scene.add(elH); decor.push(elH);
       const elG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0x00FFD0, transparent: true, opacity: 0.2 }));
-      scene.add(elG);
+      scene.add(elG); decor.push(elG);
 
       const distH = new THREE.Mesh(new THREE.SphereGeometry(0.15, 32, 32), new THREE.MeshStandardMaterial({ color: 0xFFB800, emissive: 0xFFB800, emissiveIntensity: 0.7 }));
-      scene.add(distH);
+      scene.add(distH); decor.push(distH);
       const distG = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), new THREE.MeshBasicMaterial({ color: 0xFFB800, transparent: true, opacity: 0.25 }));
-      scene.add(distG);
-      const DIST_GEARS = [-0.85, -0.52, -0.17, 0.10, 0.45, 0.85]; // 远景→特写 5 档
+      scene.add(distG); decor.push(distG);
+      const DIST_GEARS = [-0.85, -0.52, -0.17, 0.10, 0.45, 0.85];
+      // 确保 UI 模式应用到已创建的装饰元素
+      decor.forEach(d => { if (d && typeof d.visible !== 'undefined') d.visible = uiMode === 0; });
       function snapDist() {
         let idx = 0;
         for (let i = 1; i < DIST_GEARS.length; i++) {
@@ -215,35 +241,80 @@ app.registerExtension({
 
       // ---- 参数状态 ----
       const S = { px: 0, py: 0, pz: 0, rv: 0, cfg: JSON.parse(JSON.stringify(DC)), azimuth: 0, elevation: 15, dist: 5.5, dragging: false, tgt: null, hovered: null, animId: null };
-      // 标签内存缓存（写时同步 extra_config 做持久化，读时直接用内存保证实时响应）
+
+      // ---- 标签数据 TAGS（BSK 风格：每轴 extra/weight，无 panel_extra） ----
       const TAGS = {
-        azimuth: { directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } } },
-        elevation: { categories: { bird: { tag: "bird's-eye view" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "worm's-eye view" } } },
-        distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
-        tilt: { dutch_tag: "dutch angle" },
+        azimuth: { directions: { front: { tag: "from front" }, back: { tag: "from behind" }, left: { tag: "facing right" }, right: { tag: "facing left" } }, enabled: true, weight: 10, extra: 0, deadzone_ratio: 0.05 },
+        elevation: { categories: { bird: { tag: "extreme high-angle shot" }, high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" }, worm: { tag: "extreme low-angle shot" } }, enabled: true, extra: 0 },
+        distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } }, enabled: true, extra: 0 },
+        tilt: { dutch_tag: "dutch angle", enabled: true, extra: 0, deadzone: 0.15 },
+        extra_master: 1, weight_max: 10, weight_min: 0.1, ui_mode: 0,
       };
+      function restoreTags() {
+        const rw = gw("_tags_json");
+        if (rw && rw.value && rw.value !== "{}") {
+          try {
+            const d = JSON.parse(rw.value);
+            if (typeof d === 'object' && d) {
+              // 安全合并，保留 TAGS 默认值（兼容旧工作流缺少 weight/extra 等字段）
+              (function mergeSafe(t, s) {
+                for (const k of Object.keys(s)) {
+                  if (k === "directions" || k === "categories") { t[k] = s[k]; continue; }
+                  if (typeof s[k] === 'object' && s[k] && !Array.isArray(s[k]) && typeof t[k] === 'object' && t[k] && !Array.isArray(t[k])) {
+                    mergeSafe(t[k], s[k]);
+                  } else if (s[k] !== undefined) {
+                    t[k] = s[k];
+                  }
+                }
+              })(TAGS, d);
+            }
+          } catch(_) {}
+        }
+        syncTagsToWidget();
+        // 兜底：确保关键字段不缺失
+        if (TAGS.elevation.extra === undefined || TAGS.elevation.extra === null) TAGS.elevation.extra = 0;
+        if (TAGS.distance.extra === undefined || TAGS.distance.extra === null) TAGS.distance.extra = 0;
+        if (TAGS.tilt.extra === undefined || TAGS.tilt.extra === null) TAGS.tilt.extra = 0;
+        if (TAGS.azimuth.extra === undefined || TAGS.azimuth.extra === null) TAGS.azimuth.extra = 0;
+        if (TAGS.azimuth.weight === undefined || TAGS.azimuth.weight === null) TAGS.azimuth.weight = 10;
+        if (TAGS.extra_master === undefined || TAGS.extra_master === null) TAGS.extra_master = 1;
+        // 恢复 UI 模式
+        if (typeof hMode !== 'undefined' && hMode) applyUIMode(TAGS.ui_mode ?? 0);
+        // 如果标签面板收起但节点高度异常大（来自旧保存），恢复基础高度
+        if (tagPanel && tagPanel.style.display === "none" && node.size[1] > 600) {
+          node.setSize([node.size[0], Math.max(580, node.size[1] - TAG_PANEL_H)]);
+          if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }
+        // 刷新标签面板所有输入框（text/checkbox/range）
+        if (tagPanel) {
+          tagPanel.querySelectorAll("input").forEach(inp => {
+            if (inp.type === "text") {
+              // 按路径查找 TAGS 值
+              const path = inp._tagPath;
+              if (path) { let o = TAGS; for (const p of path) { if (o && typeof o === 'object') o = o[p]; } if (typeof o === 'string') inp.value = o; }
+            } else if (inp.type === "checkbox") {
+              const axis = inp._tagAxis;
+              if (axis && TAGS[axis]) inp.checked = TAGS[axis].enabled !== false;
+            } else if (inp.type === "range") {
+              const axis = inp._tagAxis;
+              const key = inp._tagKey || "extra";
+              if (axis && TAGS[axis]) { inp.value = TAGS[axis][key] ?? 0; const sib = inp.nextElementSibling; if (sib) sib.textContent = parseFloat(inp.value).toFixed(1); }
+            }
+          });
+        }
+      }
       function syncTagsToWidget() {
         const rw = gw("_tags_json");
         if (rw) rw.value = JSON.stringify(TAGS);
       }
 
+      // ---- 辅助 ----
       function gw(n) { return node.widgets?.find(w => w.name === n); }
-      // 强制钳制 pos_y（工作流加载完成后 ComfyUI 可能重写 widget 值）
       const clampY = () => { const wy = gw("pos_y"); if (wy) wy.value = Math.max(-1, Math.min(1, wy.value || 0)); };
       clampY();
-      node.onConfigure = (function(orig) { return function() { if (orig) orig.apply(this, arguments); setTimeout(clampY, 50); }; })(node.onConfigure);
+      node.onConfigure = (function(orig) { return function() { if (orig) orig.apply(this, arguments); setTimeout(clampY, 50); restoreTags(); }; })(node.onConfigure);
 
-      // pos_z 吸入距离档位（6 档）
-      const snapZ = () => {
-        const wz = gw("pos_z");
-        if (!wz) return;
-        let best = 0;
-        for (let i = 1; i < DIST_GEARS.length; i++) {
-          if (Math.abs(wz.value - DIST_GEARS[i]) < Math.abs(wz.value - DIST_GEARS[best])) best = i;
-        }
-        wz.value = DIST_GEARS[best];
-      };
-      // 监听 pos_z widget 变更时切换到相邻档位
+      // pos_z 档位切换
       (function() {
         const wz = gw("pos_z");
         if (wz && !wz._zHooked) {
@@ -254,14 +325,12 @@ app.registerExtension({
             const dir = parseFloat(v) > oldVal ? 1 : -1;
             let idx = DIST_GEARS.indexOf(oldVal);
             if (idx < 0) {
-              // 不在档位上，吸入最近档
               let best = 0;
               for (let i = 1; i < DIST_GEARS.length; i++) {
                 if (Math.abs(v - DIST_GEARS[i]) < Math.abs(v - DIST_GEARS[best])) best = i;
               }
               wz.value = DIST_GEARS[best];
             } else {
-              // 切到相邻档位
               const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, idx + dir));
               wz.value = DIST_GEARS[ni];
             }
@@ -270,12 +339,12 @@ app.registerExtension({
           wz._zHooked = true;
         }
       })();
+
       function readW() {
         S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = toFixed2(gw("roll")?.value ?? 0);
-        // elevation -30°~60° → py -1~1, dist 1~10 → pz -1~1
         S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
-        snapDist(); // 吸入距离档位
+        snapDist();
       }
       readW(); setTimeout(readW, 200);
 
@@ -287,11 +356,27 @@ app.registerExtension({
 
       // ---- 更新 3D ----
       function upd() {
-        // 从 widget 读取最新值
         S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
         S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = parseFloat(gw("roll")?.value ?? 0);
         S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
         snapDist();
+        // 从 TAGS 同步配置到预览（BSK 风格）
+        S.cfg.azimuth.enabled = TAGS.azimuth.enabled;
+        S.cfg.azimuth.weight = TAGS.azimuth.weight ?? 10;
+        S.cfg.azimuth.extra = TAGS.azimuth.extra ?? 0;
+        S.cfg.azimuth.deadzone_ratio = TAGS.azimuth.deadzone_ratio ?? 0.05;
+        S.cfg.elevation.enabled = TAGS.elevation.enabled;
+        S.cfg.elevation.extra = TAGS.elevation.extra ?? 0;
+        S.cfg.distance.enabled = TAGS.distance.enabled;
+        S.cfg.distance.extra = TAGS.distance.extra ?? 0;
+        S.cfg.tilt.enabled = TAGS.tilt.enabled;
+        S.cfg.tilt.extra = TAGS.tilt.extra ?? 0;
+        S.cfg.extra_master = TAGS.extra_master ?? 1;
+        // 同步标签文本
+        if (TAGS.azimuth && TAGS.azimuth.directions) S.cfg.azimuth.directions = TAGS.azimuth.directions;
+        if (TAGS.elevation && TAGS.elevation.categories) S.cfg.elevation.categories = TAGS.elevation.categories;
+        if (TAGS.distance && TAGS.distance.categories) S.cfg.distance.categories = TAGS.distance.categories;
+        if (TAGS.tilt && TAGS.tilt.dutch_tag) S.cfg.tilt.dutch_tag = TAGS.tilt.dutch_tag;
         const ar = S.azimuth * Math.PI / 180, er = S.elevation * Math.PI / 180, vd = 2.6 - (S.dist / 10) * 2.0;
         const cx = vd * Math.sin(ar) * Math.cos(er), cy = CENTER.y + vd * Math.sin(er), cz = vd * Math.cos(ar) * Math.cos(er);
         camCone.position.set(cx, cy, cz); camCone.lookAt(CENTER); camCone.rotateX(Math.PI / 2);
@@ -305,19 +390,13 @@ app.registerExtension({
         const ad = S.px * 180;
         hDir.textContent = Math.abs(S.px) > 0.85 ? "背面 · 180°" : S.px < -0.05 ? "左 " + Math.abs(ad).toFixed(0) + "°" : S.px > 0.05 ? "右 " + ad.toFixed(0) + "°" : "正面 · 0°";
         hRoll.textContent = S.rv > 0 ? "倾斜: " + (S.rv * 10).toFixed(2) : "";
-        // 合并自定义标签到预览配置（仅覆盖 tag 字段，保留权重/死区）
-        if (TAGS.azimuth && TAGS.azimuth.directions) S.cfg.azimuth.directions = TAGS.azimuth.directions;
-        if (TAGS.elevation && TAGS.elevation.categories) S.cfg.elevation.categories = TAGS.elevation.categories;
-        if (TAGS.distance && TAGS.distance.categories) S.cfg.distance.categories = TAGS.distance.categories;
-        if (TAGS.tilt && TAGS.tilt.dutch_tag) S.cfg.tilt.dutch_tag = TAGS.tilt.dutch_tag;
         if (previewEl) previewEl.value = computePrompt(S.px, S.py, S.pz, S.rv, S.cfg);
       }
 
       let alive = true;
 
-      // ---- 动画循环 ----
       function anim() {
-        if (!alive) return; // 节点已删除时停止
+        if (!alive) return;
         S.animId = requestAnimationFrame(anim);
         gr.rotation.z += 0.005;
         try { renderer.render(scene, cam3d); } catch (_) {}
@@ -364,14 +443,13 @@ app.registerExtension({
       renderer.domElement.addEventListener("pointercancel", () => { S.dragging = false; S.tgt = null; });
       renderer.domElement.addEventListener("wheel", e => {
         e.preventDefault();
-        // 滚轮切换距离档位：上滚远景，下滚特写
         let idx = DIST_GEARS.indexOf(S.pz);
         if (idx < 0) { snapDist(); idx = DIST_GEARS.indexOf(S.pz); }
         const dir = e.deltaY > 0 ? 1 : -1;
         const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, (idx >= 0 ? idx : 3) + dir));
         S.pz = DIST_GEARS[ni]; S.dist = S.pz * 4.5 + 5.5; syncN();
       }, { passive: false });
- 
+
       // ---- 按钮行 ----
       const bRow = document.createElement("div"); bRow.className = "btn-r"; container.appendChild(bRow);
       const rst = document.createElement("button"); rst.textContent = "归位";
@@ -379,7 +457,7 @@ app.registerExtension({
       bRow.appendChild(rst);
       // ---- 标签编辑按钮 ----
       const tagBtn = document.createElement("button"); tagBtn.textContent = "🏷 标签";
-      const TAG_PANEL_H = 280; // 标签面板固定高度
+      const TAG_PANEL_H = 380;
       tagBtn.onclick = function () {
         const show = tagPanel.style.display === "none";
         tagPanel.style.display = show ? "block" : "none";
@@ -391,7 +469,7 @@ app.registerExtension({
 
       // ---- 标签编辑面板 ----
       const tagPanel = document.createElement("div");
-      tagPanel.style.cssText = "display:none;border:1px solid #444;border-radius:6px;padding:6px;background:rgba(0,0,0,0.3);margin-top:4px;max-height:300px;overflow-y:auto";
+      tagPanel.style.cssText = "display:none;border:1px solid #444;border-radius:6px;padding:6px;background:rgba(0,0,0,0.3);margin-top:4px;max-height:400px;overflow-y:auto";
       container.appendChild(tagPanel);
 
       const tagFields = [
@@ -402,11 +480,11 @@ app.registerExtension({
           ["右侧", "azimuth > directions > right > tag", "facing left"],
         ]],
         ["高度", [
-          ["鸟瞰", "elevation > categories > bird > tag", "bird's-eye view"],
+          ["极限俯视", "elevation > categories > bird > tag", "extreme high-angle shot"],
           ["俯视", "elevation > categories > high > tag", "high angle"],
           ["平视", "elevation > categories > eye > tag", "eye-level"],
           ["仰视", "elevation > categories > low > tag", "low angle"],
-          ["虫瞰", "elevation > categories > worm > tag", "worm's-eye view"],
+          ["极限仰视", "elevation > categories > worm > tag", "extreme low-angle shot"],
         ]],
         ["距离", [
           ["特写", "distance > categories > ecu > tag", "extreme close-up"],
@@ -423,28 +501,66 @@ app.registerExtension({
         fields.forEach(([label, path, def]) => {
           const parts = path.split(" > ");
           const row = document.createElement("div"); row.style.cssText = "display:flex;align-items:center;gap:4px;margin:1px 0";
-          const lbl = document.createElement("span"); lbl.style.cssText = "width:40px;font-size:9px;color:rgba(255,255,255,0.6);flex-shrink:0"; lbl.textContent = label; row.appendChild(lbl);
+          const lbl = document.createElement("span"); lbl.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6);flex-shrink:0"; lbl.textContent = label; row.appendChild(lbl);
           const inp = document.createElement("input"); inp.type = "text"; inp.style.cssText = "flex:1;min-width:0;font-size:9px;background:#222;border:1px solid #444;color:#ddd;border-radius:3px;padding:1px 4px";
-          // 从 TAGS 读取当前值
           let val = def;
           try { let o = TAGS; for (const p of parts) { if (o && typeof o === 'object') o = o[p]; } if (typeof o === 'string') val = o; } catch(_) {}
           inp.value = val;
           inp.oninput = function () {
-            // 写入 TAGS 内存（直接生效，upd 下一帧自动读取）
             let o = TAGS; for (let i = 0; i < parts.length - 1; i++) { if (!o[parts[i]]) o[parts[i]] = {}; o = o[parts[i]]; }
             o[parts[parts.length - 1]] = this.value;
-            syncTagsToWidget(); // 同步到 extra_config 做持久化
+            syncTagsToWidget();
           };
+          inp._tagPath = parts; // 供 restoreTags 刷新用
           row.appendChild(inp); tagPanel.appendChild(row);
         });
       });
-      syncTagsToWidget(); // 初始化写入持久化
+
+      // ---- 参数控制分组（BSK 风格） ----
+      (function buildCtrlPanel() {
+        const gl = document.createElement("div"); gl.style.cssText = "font-size:10px;color:#e67e22;margin:10px 0 2px 0;font-weight:bold"; gl.textContent = "参数控制"; tagPanel.appendChild(gl);
+        // 额外权重总控
+        const rowEm = document.createElement("div"); rowEm.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
+        const lblEm = document.createElement("span"); lblEm.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; lblEm.textContent = "总控乘数"; rowEm.appendChild(lblEm);
+        const slEm = document.createElement("input"); slEm.type = "range"; slEm.min = 0.1; slEm.max = 10; slEm.step = 0.1;
+        slEm.value = TAGS.extra_master ?? 1;
+        const svEm = document.createElement("span"); svEm.style.cssText = "width:28px;text-align:right;font-size:9px;color:rgba(255,255,255,0.5);font-family:monospace"; svEm.textContent = slEm.value;
+        slEm.oninput = function () { const v = parseFloat(this.value); TAGS.extra_master = v; svEm.textContent = v.toFixed(1); syncTagsToWidget(); };
+        rowEm.appendChild(slEm); rowEm.appendChild(svEm); tagPanel.appendChild(rowEm);
+
+        const ctrlKeys = [
+          { axis: "azimuth", label: "方位", hasExtra: true, extraRange: [-10, 10] },
+          { axis: "elevation", label: "高度", hasExtra: true, extraRange: [-10, 10] },
+          { axis: "distance", label: "距离", hasExtra: true, extraRange: [-10, 10] },
+          { axis: "tilt", label: "倾斜", hasExtra: true, extraRange: [-10, 10] },
+        ];
+        ctrlKeys.forEach(({ axis, label, hasExtra, extraRange }) => {
+          // 启用开关行
+          const rowEn = document.createElement("div"); rowEn.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
+          const lblEn = document.createElement("span"); lblEn.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; lblEn.textContent = label + "启用"; rowEn.appendChild(lblEn);
+          const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = TAGS[axis]?.enabled !== false;
+          chk.onchange = function () { TAGS[axis].enabled = this.checked; syncTagsToWidget(); };
+          chk._tagAxis = axis;
+          rowEn.appendChild(chk);
+          tagPanel.appendChild(rowEn);
+          if (hasExtra) {
+            const rowEx = document.createElement("div"); rowEx.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
+            const lblEx = document.createElement("span"); lblEx.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; lblEx.textContent = label + "额外"; rowEx.appendChild(lblEx);
+            const sl = document.createElement("input"); sl.type = "range"; sl.min = extraRange[0]; sl.max = extraRange[1]; sl.step = 0.5;
+            sl.value = TAGS[axis]?.extra ?? 0;
+            const sv = document.createElement("span"); sv.style.cssText = "width:28px;text-align:right;font-size:9px;color:rgba(255,255,255,0.5);font-family:monospace"; sv.textContent = sl.value;
+            sl.oninput = function () { const v = parseFloat(this.value); TAGS[axis].extra = v; sv.textContent = v.toFixed(1); syncTagsToWidget(); };
+            sl._tagAxis = axis; sl._tagKey = "extra";
+            rowEx.appendChild(sl); rowEx.appendChild(sv); tagPanel.appendChild(rowEx);
+          }
+        });
+      })();
 
       // ---- 预览 ----
       const previewEl = document.createElement("textarea"); previewEl.className = "pr"; previewEl.readOnly = true; previewEl.rows = 2; container.appendChild(previewEl);
       const ph = document.createElement("div"); ph.className = "ph"; ph.textContent = "→ CLIP Text Encode"; container.appendChild(ph);
 
-      // ---- 清理（安全销毁，避免节点删除时 rAF 还在跑） ----
+      // ---- 清理 ----
       const domWidget = node.widgets?.find(w => w.name === "cam3d");
       if (domWidget) {
         const baseRO = domWidget.onRemove;

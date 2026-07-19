@@ -1,35 +1,43 @@
 """
-CameraAngleNode - 可视化相机提示词控制节点（极向门控版）
-
-权重/死区参数固定为合理默认值，不再由外部面板控制。
-标签固定使用默认值，不再支持外部 tag_config 覆盖。
-额外提示词仍可接入可选配置节点。
+CameraAngleNode - 可视化相机提示词控制节点
 """
-
 import json
 import math
 
 # 默认标签
 DEFAULT_TAGS = {
-    "azimuth": {"directions": {
-        "front": {"tag": "from front"}, "back": {"tag": "from behind"},
-        "left": {"tag": "facing right"}, "right": {"tag": "facing left"},
-    }},
-    "elevation": {"categories": {
-        "bird": {"tag": "bird's-eye view"}, "high": {"tag": "high angle"},
-        "eye": {"tag": "eye-level"}, "low": {"tag": "low angle"},
-        "worm": {"tag": "worm's-eye view"},
-    }},
-    "distance": {"categories": {
-        "ecu": {"tag": "extreme close-up"}, "cu": {"tag": "close-up"},
-        "medium": {"tag": "medium shot"}, "cowboy_shot": {"tag": "cowboy shot"},
-        "full": {"tag": "full body"},
-        "wide": {"tag": "wide shot"},
-    }},
-    "tilt": {"dutch_tag": "dutch angle"},
+    "azimuth": {
+        "directions": {
+            "front": {"tag": "from front"}, "back": {"tag": "from behind"},
+            "left": {"tag": "facing right"}, "right": {"tag": "facing left"},
+        },
+        "enabled": True, "weight": 10.0, "extra": 0.0, "deadzone_ratio": 0.05,
+    },
+    "elevation": {
+        "categories": {
+            "bird": {"tag": "extreme high-angle shot"}, "high": {"tag": "high angle"},
+            "eye": {"tag": "eye-level"}, "low": {"tag": "low angle"},
+            "worm": {"tag": "extreme low-angle shot"},
+        },
+        "enabled": True, "extra": 0.0,
+    },
+    "distance": {
+        "categories": {
+            "ecu": {"tag": "extreme close-up"}, "cu": {"tag": "close-up"},
+            "medium": {"tag": "medium shot"}, "cowboy_shot": {"tag": "cowboy shot"},
+            "full": {"tag": "full body"}, "wide": {"tag": "wide shot"},
+        },
+        "enabled": True, "extra": 0.0,
+    },
+    "tilt": {
+        "dutch_tag": "dutch angle",
+        "enabled": True, "extra": 0.0, "deadzone": 0.15,
+    },
+    "extra_master": 1.0,
+    "weight_max": 10.0,
+    "weight_min": 0.1,
 }
 
-# 默认额外提示词
 DEFAULT_EXTRAS = {
     "lens": {"enabled": False, "value": "85mm lens"},
     "dof": {"enabled": False, "value": "shallow depth of field", "weight": 1.3},
@@ -37,7 +45,6 @@ DEFAULT_EXTRAS = {
     "composition": {"enabled": False, "value": "rule of thirds"},
     "style": {"enabled": False, "value": "cinematic"},
 }
-
 
 def _deep_merge(base, override):
     for k, v in override.items():
@@ -47,10 +54,7 @@ def _deep_merge(base, override):
             base[k] = v
     return base
 
-
 class CameraAngleNode:
-    """可视化相机提示词控制节点（极向门控版）"""
-
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -59,7 +63,6 @@ class CameraAngleNode:
                 "pos_y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
                 "pos_z": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.10}),
                 "roll": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.10}),
-                # 标签 JSON（required STRING 确保序列化，前端极小化隐藏）
                 "_tags_json": ("STRING", {"multiline": False, "default": "{}"}),
             },
             "optional": {
@@ -78,12 +81,10 @@ class CameraAngleNode:
 
     @staticmethod
     def _split_tags(tag):
-        """逗号分隔的多标签拆分为列表。"""
         return [t.strip() for t in str(tag).split(",") if t.strip()]
 
     @classmethod
     def _emit_weighted(cls, tag, w):
-        """多标签共享同一权重输出。"""
         return [f"({t}:{cls._fmt_weight(w)})" for t in cls._split_tags(tag)]
 
     @staticmethod
@@ -105,18 +106,12 @@ class CameraAngleNode:
 
     def execute(self, pos_x, pos_y, pos_z, roll,
                 _tags_json="{}", extra_config=""):
-
-        # 钳制输入值到合法范围
         pos_x = max(-1.0, min(1.0, float(pos_x)))
         pos_y = max(-1.0, min(1.0, float(pos_y)))
         pos_z = max(-1.0, min(1.0, float(pos_z)))
         roll = max(0.0, min(1.0, float(roll)))
 
-        # 固定权重参数
-        w_az = 10.0; w_max = 10.0; w_ma = 1.0; w_el = 10.0
-        w_di = 0.0; w_az_dz = 0.05
-
-        # 加载标签（默认值 + _tags_json 覆盖）
+        # 加载配置（标签 + 权重参数）
         tags = {}
         _deep_merge(tags, DEFAULT_TAGS)
         if _tags_json and _tags_json != "{}":
@@ -125,7 +120,19 @@ class CameraAngleNode:
                 if isinstance(td, dict): _deep_merge(tags, td)
             except Exception: pass
 
-        # 加载额外提示词（从 extra_config）
+        # 读取配置值（带安全兜底）
+        wmin = float(tags.get("weight_min", 0.1))
+        wmax = float(tags.get("weight_max", 10.0))
+        em = float(tags.get("extra_master", 1.0))
+        az_weight = float(tags.get("azimuth", {}).get("weight", 10.0))
+        az_extra = float(tags.get("azimuth", {}).get("extra", 0.0))
+        az_dz = float(tags.get("azimuth", {}).get("deadzone_ratio", 0.05))
+        el_extra = float(tags.get("elevation", {}).get("extra", 10.0))
+        di_extra = float(tags.get("distance", {}).get("extra", 0.0))
+        ti_extra = float(tags.get("tilt", {}).get("extra", 0.0))
+        ti_dz = float(tags.get("tilt", {}).get("deadzone", 0.15))
+
+        # 加载额外提示词
         extras = {}
         _deep_merge(extras, DEFAULT_EXTRAS)
         if extra_config:
@@ -134,47 +141,55 @@ class CameraAngleNode:
                 if "extras" in ec: extras.update(ec["extras"])
             except Exception: pass
 
-        wmin = 0.1; wmax = w_max; dz = w_az_dz
         parts = []
 
-        # ---------- 方位（极向门控） ----------
-        az = float(pos_x) * math.pi
-        front = max(0.0, math.cos(az))
-        back = max(0.0, -math.cos(az))
-        right = max(0.0, math.sin(az))
-        left = max(0.0, -math.sin(az))
-        s = front + back + left + right
-        if s > 0:
-            front /= s; back /= s; left /= s; right /= s
-        # 极向门控：|pos_y|>0.9 时才削减方位预算
-        AZ_POLE = 0.9
-        az_gate = max(0.0, min(1.0, (1.0 - abs(pos_y)) / (1.0 - AZ_POLE)))
-        az_budget = w_az * az_gate
-        for name, ratio in (("front", front), ("back", back), ("left", left), ("right", right)):
-            w = ratio * az_budget
-            if ratio <= 0 or w < dz: continue
-            w = min(wmax, max(wmin, w))
-            parts.extend(self._emit_weighted(tags["azimuth"]["directions"][name]["tag"], w))
+        # ---------- 方位 ----------
+        az_tag = tags.get("azimuth", {})
+        if az_tag.get("enabled", True):
+            az = float(pos_x) * math.pi
+            front = max(0.0, math.cos(az))
+            back = max(0.0, -math.cos(az))
+            right = max(0.0, math.sin(az))
+            left = max(0.0, -math.sin(az))
+            s = front + back + left + right
+            if s > 0:
+                front /= s; back /= s; left /= s; right /= s
+            AZ_POLE = 0.9
+            az_gate = max(0.0, min(1.0, (1.0 - abs(pos_y)) / (1.0 - AZ_POLE)))
+            az_budget = (az_weight + az_extra * em) * az_gate
+            for name, ratio in (("front", front), ("back", back), ("left", left), ("right", right)):
+                w = ratio * az_budget
+                if ratio <= 0 or w < az_dz: continue
+                w = min(wmax + max(0.0, az_extra * em), max(wmin, w))
+                parts.extend(self._emit_weighted(az_tag["directions"][name]["tag"], w))
 
         # ---------- 高度 ----------
-        elev_key = self._elevation_key(pos_y)
-        elev_cat = tags["elevation"]["categories"].get(elev_key)
-        if elev_cat and elev_cat.get("tag"):
-            ew = abs(pos_y) * (1.0 + w_ma * w_el)
-            if ew >= dz:
-                ew = min(wmax, max(wmin, ew))
-                parts.extend(self._emit_weighted(elev_cat["tag"], ew))
+        el_tag = tags.get("elevation", {})
+        if el_tag.get("enabled", True):
+            elev_key = self._elevation_key(pos_y)
+            elev_cat = el_tag.get("categories", {}).get(elev_key)
+            if elev_cat and elev_cat.get("tag"):
+                # 分级乘数：鸟瞰/虫瞰=4，俯视/仰视=10，平视=15
+                el_base_mult = 4.0 if elev_key in ("bird", "worm") else (10.0 if elev_key in ("high", "low") else 15.0)
+                ew = abs(pos_y) * el_base_mult + em * el_extra
+                if ew >= az_dz:
+                    ew = min(wmax + max(0.0, el_extra * em), max(wmin, ew))
+                    parts.extend(self._emit_weighted(elev_cat["tag"], ew))
 
         # ---------- 距离 ----------
-        dist_key = self._distance_key(pos_z)
-        dist_cat = tags["distance"]["categories"].get(dist_key)
-        if dist_cat and dist_cat.get("tag"):
-            dw = 1.0 + w_ma * w_di
-            parts.extend(self._emit_weighted(dist_cat["tag"], min(wmax, max(0.1, dw))))
+        di_tag = tags.get("distance", {})
+        if di_tag.get("enabled", True):
+            dist_key = self._distance_key(pos_z)
+            dist_cat = di_tag.get("categories", {}).get(dist_key)
+            if dist_cat and dist_cat.get("tag"):
+                dw = 1.0 + em * di_extra
+                parts.extend(self._emit_weighted(dist_cat["tag"], min(wmax + max(0.0, di_extra * em), max(0.1, dw))))
 
         # ---------- 倾斜 ----------
-        if float(roll) > 0:
-            parts.extend(self._emit_weighted(tags["tilt"]["dutch_tag"], float(roll) * 10.0))
+        ti_tag = tags.get("tilt", {})
+        if ti_tag.get("enabled", True) and float(roll) > 0:
+            tw = 1.0 + em * ti_extra
+            parts.extend(self._emit_weighted(ti_tag.get("dutch_tag", ""), min(wmax + max(0.0, ti_extra * em), max(0.1, tw))))
 
         # ---------- 额外提示词 ----------
         for key in ("lens", "dof", "movement", "composition", "style"):
