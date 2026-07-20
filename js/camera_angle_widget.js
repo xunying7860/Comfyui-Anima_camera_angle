@@ -32,6 +32,7 @@ const DC = {
   elevation: { extra: 0, enabled: true, weight_max: 0, categories: { high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" } } },
   distance: { extra: 0, enabled: true, weight_max: 0, categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } } },
   tilt: { deadzone: 0.15, extra: 0, dutch_tag: "dutch angle", enabled: true, weight_max: 0 }, extra_master: 1,
+  xy_mult_enabled: true, xy_mult: 10,
   extras: { lens: { enabled: false, value: "85mm lens" }, dof: { enabled: false, value: "shallow depth of field", weight: 1.3 }, movement: { enabled: false, value: "handheld camera" }, composition: { enabled: false, value: "rule of thirds" }, style: { enabled: false, value: "cinematic" } },
 };
 function toFixed2(v) { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; }
@@ -48,20 +49,23 @@ function emitWeighted(tag, w, wmin, wmax) {
 function computePrompt(px, py, pz, roll, c) {
   const p = [], wmin = parseFloat(c.weight_min) || 0.1, wmax = parseFloat(c.weight_max) || 10, dz = parseFloat(c.azimuth.deadzone_ratio) || 0.05;
   const em = parseFloat(c.extra_master) || 1;
+  const xyM = c.xy_mult_enabled ? parseFloat(c.xy_mult) || 10 : null;
+  const curMax = xyM !== null ? Math.max(wmax, xyM) : wmax;
   // 方位
   if (c.azimuth.enabled !== false) {
     const az = px * Math.PI;
     const d = { front: Math.max(0, Math.cos(az)), back: Math.max(0, -Math.cos(az)), right: Math.max(0, Math.sin(az)), left: Math.max(0, -Math.sin(az)) };
     const s = d.front + d.back + d.right + d.left; if (s > 0) { d.front /= s; d.back /= s; d.right /= s; d.left /= s; }
     const AZ_POLE = 0.9, azGate = Math.max(0, Math.min(1, (1 - Math.abs(py)) / (1 - AZ_POLE)));
-    const azBudget = ((parseFloat(c.azimuth.weight) || 1) + (parseFloat(c.azimuth.extra) || 0) * em) * azGate;
-    const azCap = 10 + Math.max(0, (parseFloat(c.azimuth.extra) || 0) * em);
+    const azW = xyM !== null ? xyM : (parseFloat(c.azimuth.weight) || 1);
+    const azBudget = (azW + (parseFloat(c.azimuth.extra) || 0) * em) * azGate;
+    const azCap = curMax + Math.max(0, (parseFloat(c.azimuth.extra) || 0) * em);
     for (const [k, nv] of Object.entries(d)) { const w = nv * azBudget; if (nv <= 0 || w < dz) continue; p.push(...emitWeighted(c.azimuth.directions[k].tag, w, wmin, azCap)); }
   }
   // 高度
   if (c.elevation.enabled !== false) {
     const ek = py > 0.2 ? "high" : py >= -0.2 ? "eye" : "low";
-    const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const elMult = ek === "eye" ? 15 : 10; const ew = Math.abs(py) * elMult + em * (parseFloat(c.elevation.extra) || 0); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, wmax + Math.max(0, (parseFloat(c.elevation.extra) || 0) * em))); }
+    const ei = c.elevation.categories[ek]; if (ei && ei.tag) { const elMult = xyM !== null ? xyM : (ek === "eye" ? 15 : 10); const ew = Math.abs(py) * elMult + em * (parseFloat(c.elevation.extra) || 0); if (ew >= dz) p.push(...emitWeighted(ei.tag, ew, wmin, curMax + Math.max(0, (parseFloat(c.elevation.extra) || 0) * em))); }
   }
   // 距离
   if (c.distance.enabled !== false) {
@@ -233,7 +237,7 @@ app.registerExtension({
         elevation: { extra: 0, enabled: true, weight_max: 0, categories: { high: { tag: "high angle" }, eye: { tag: "eye-level" }, low: { tag: "low angle" } } },
         distance: { categories: { ecu: { tag: "extreme close-up" }, cu: { tag: "close-up" }, medium: { tag: "medium shot" }, cowboy_shot: { tag: "cowboy shot" }, full: { tag: "full body" }, wide: { tag: "wide shot" } }, enabled: true, extra: 0 },
         tilt: { dutch_tag: "dutch angle", enabled: true, extra: 0, deadzone: 0.15 },
-        extra_master: 1, weight_max: 10, weight_min: 0.1,
+        extra_master: 1, weight_max: 10, weight_min: 0.1, xy_mult_enabled: true, xy_mult: 10,
       };
       function restoreTags() {
         const rw = gw("_tags_json");
@@ -263,6 +267,8 @@ app.registerExtension({
         if (TAGS.azimuth.extra === undefined || TAGS.azimuth.extra === null) TAGS.azimuth.extra = 0;
         if (TAGS.azimuth.weight === undefined || TAGS.azimuth.weight === null) TAGS.azimuth.weight = 10;
         if (TAGS.extra_master === undefined || TAGS.extra_master === null) TAGS.extra_master = 1;
+        if (TAGS.xy_mult_enabled === undefined || TAGS.xy_mult_enabled === null) TAGS.xy_mult_enabled = true;
+        if (TAGS.xy_mult === undefined || TAGS.xy_mult === null) TAGS.xy_mult = 10;
         if (tagPanel && tagPanel.style.display === "none" && node.size[1] > 600) {
           node.setSize([node.size[0], Math.max(580, node.size[1] - TAG_PANEL_H)]);
           if (node.graph) node.graph.setDirtyCanvas(true, true);
@@ -354,6 +360,8 @@ app.registerExtension({
         S.cfg.tilt.enabled = TAGS.tilt.enabled;
         S.cfg.tilt.extra = TAGS.tilt.extra ?? 0;
         S.cfg.extra_master = TAGS.extra_master ?? 1;
+        S.cfg.xy_mult_enabled = TAGS.xy_mult_enabled ?? false;
+        S.cfg.xy_mult = TAGS.xy_mult ?? 10;
         // 同步标签文本
         if (TAGS.azimuth && TAGS.azimuth.directions) S.cfg.azimuth.directions = TAGS.azimuth.directions;
         if (TAGS.elevation && TAGS.elevation.categories) S.cfg.elevation.categories = TAGS.elevation.categories;
@@ -437,12 +445,12 @@ app.registerExtension({
       rst.onclick = () => { S.azimuth = 0; S.elevation = 15; S.dist = 5.5; S.px = S.py = S.pz = S.rv = 0; syncN(); };
       bRow.appendChild(rst);
       // ---- 标签编辑按钮 ----
-      const tagBtn = document.createElement("button"); tagBtn.textContent = "🏷 标签";
+      const tagBtn = document.createElement("button"); tagBtn.textContent = "标签";
       const TAG_PANEL_H = 380;
       tagBtn.onclick = function () {
         const show = tagPanel.style.display === "none";
         tagPanel.style.display = show ? "block" : "none";
-        this.textContent = show ? "✕ 收起标签" : "🏷 标签";
+        this.textContent = show ? "收起标签" : "标签";
         node.setSize([node.size[0], Math.max(580, node.size[1] + (show ? TAG_PANEL_H : -TAG_PANEL_H))]);
         if (node.graph) node.graph.setDirtyCanvas(true, true);
       };
@@ -498,6 +506,19 @@ app.registerExtension({
       // ---- 参数控制分组（BSK 风格） ----
       (function buildCtrlPanel() {
         const gl = document.createElement("div"); gl.style.cssText = "font-size:10px;color:#e67e22;margin:10px 0 2px 0;font-weight:bold"; gl.textContent = "参数控制"; tagPanel.appendChild(gl);
+        // XY 乘数覆盖
+        const rowXy = document.createElement("div"); rowXy.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
+        const lblXy = document.createElement("span"); lblXy.textContent = "XY乘数"; lblXy.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; rowXy.appendChild(lblXy);
+        const slXy = document.createElement("input"); slXy.type = "range"; slXy.min = 1; slXy.max = 20; slXy.step = 0.1;
+        slXy.value = TAGS.xy_mult ?? 10;
+        slXy.oninput = function () { TAGS.xy_mult = parseFloat(this.value); svXy.textContent = this.value; syncTagsToWidget(); };
+        rowXy.appendChild(slXy);
+        const svXy = document.createElement("span"); svXy.textContent = slXy.value; svXy.style.cssText = "width:28px;text-align:right;font-size:9px;color:rgba(255,255,255,0.5);font-family:monospace";
+        rowXy.appendChild(svXy);
+        const chkXy = document.createElement("input"); chkXy.type = "checkbox"; chkXy.checked = TAGS.xy_mult_enabled !== false;
+        chkXy.onchange = function () { TAGS.xy_mult_enabled = this.checked; syncTagsToWidget(); };
+        rowXy.appendChild(chkXy);
+        tagPanel.appendChild(rowXy);
         // 额外权重总控
         const rowEm = document.createElement("div"); rowEm.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
         const lblEm = document.createElement("span"); lblEm.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; lblEm.textContent = "总控乘数"; rowEm.appendChild(lblEm);
@@ -514,14 +535,6 @@ app.registerExtension({
           { axis: "tilt", label: "倾斜", hasExtra: true, extraRange: [-10, 10] },
         ];
         ctrlKeys.forEach(({ axis, label, hasExtra, extraRange }) => {
-          // 启用开关行
-          const rowEn = document.createElement("div"); rowEn.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
-          const lblEn = document.createElement("span"); lblEn.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; lblEn.textContent = label + "启用"; rowEn.appendChild(lblEn);
-          const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = TAGS[axis]?.enabled !== false;
-          chk.onchange = function () { TAGS[axis].enabled = this.checked; syncTagsToWidget(); };
-          chk._tagAxis = axis;
-          rowEn.appendChild(chk);
-          tagPanel.appendChild(rowEn);
           if (hasExtra) {
             const rowEx = document.createElement("div"); rowEx.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
             const lblEx = document.createElement("span"); lblEx.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; lblEx.textContent = label + "额外"; rowEx.appendChild(lblEx);
@@ -530,7 +543,13 @@ app.registerExtension({
             const sv = document.createElement("span"); sv.style.cssText = "width:28px;text-align:right;font-size:9px;color:rgba(255,255,255,0.5);font-family:monospace"; sv.textContent = sl.value;
             sl.oninput = function () { const v = parseFloat(this.value); TAGS[axis].extra = v; sv.textContent = v.toFixed(1); syncTagsToWidget(); };
             sl._tagAxis = axis; sl._tagKey = "extra";
-            rowEx.appendChild(sl); rowEx.appendChild(sv); tagPanel.appendChild(rowEx);
+            rowEx.appendChild(sl); rowEx.appendChild(sv);
+            // 启用开关放在额外行末尾
+            const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = TAGS[axis]?.enabled !== false;
+            chk.onchange = function () { TAGS[axis].enabled = this.checked; syncTagsToWidget(); };
+            chk._tagAxis = axis;
+            rowEx.appendChild(chk);
+            tagPanel.appendChild(rowEx);
           }
         });
       })();

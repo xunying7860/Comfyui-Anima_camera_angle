@@ -36,6 +36,7 @@ DEFAULT_TAGS = {
     "extra_master": 1.0,
     "weight_max": 10.0,
     "weight_min": 0.1,
+    "xy_mult_enabled": True, "xy_mult": 10.0,
 }
 
 DEFAULT_EXTRAS = {
@@ -122,6 +123,8 @@ class CameraAngleNode:
         wmin = float(tags.get("weight_min", 0.1))
         wmax = float(tags.get("weight_max", 10.0))
         em = float(tags.get("extra_master", 1.0))
+        xy_mult_enabled = tags.get("xy_mult_enabled", False)
+        xy_mult = float(tags.get("xy_mult", 10.0))
         az_weight = float(tags.get("azimuth", {}).get("weight", 10.0))
         az_extra = float(tags.get("azimuth", {}).get("extra", 0.0))
         az_dz = float(tags.get("azimuth", {}).get("deadzone_ratio", 0.05))
@@ -155,10 +158,14 @@ class CameraAngleNode:
             AZ_POLE = 0.9
             az_gate = max(0.0, min(1.0, (1.0 - abs(pos_y)) / (1.0 - AZ_POLE)))
             az_budget = (az_weight + az_extra * em) * az_gate
+            cur_max = wmax
+            if xy_mult_enabled:
+                az_budget = (xy_mult + az_extra * em) * az_gate
+                cur_max = max(wmax, xy_mult)
             for name, ratio in (("front", front), ("back", back), ("left", left), ("right", right)):
                 w = ratio * az_budget
                 if ratio <= 0 or w < az_dz: continue
-                w = min(wmax + max(0.0, az_extra * em), max(wmin, w))
+                w = min(cur_max + max(0.0, az_extra * em), max(wmin, w))
                 parts.extend(self._emit_weighted(az_tag["directions"][name]["tag"], w))
 
         # ---------- 高度（3 档） ----------
@@ -168,9 +175,11 @@ class CameraAngleNode:
             elev_cat = el_tag.get("categories", {}).get(elev_key)
             if elev_cat and elev_cat.get("tag"):
                 el_base_mult = 15.0 if elev_key == "eye" else 10.0
+                if xy_mult_enabled:
+                    el_base_mult = xy_mult
                 ew = abs(pos_y) * el_base_mult + em * el_extra
                 if ew >= az_dz:
-                    cap = wmax + max(0.0, el_extra * em)
+                    cap = (max(wmax, xy_mult) if xy_mult_enabled else wmax) + max(0.0, el_extra * em)
                     ew = min(cap, max(wmin, ew))
                     parts.extend(self._emit_weighted(elev_cat["tag"], ew))
 
