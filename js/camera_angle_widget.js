@@ -505,7 +505,42 @@ app.registerExtension({
 
       // ---- 参数控制分组（BSK 风格） ----
       (function buildCtrlPanel() {
-        const gl = document.createElement("div"); gl.style.cssText = "font-size:10px;color:#e67e22;margin:10px 0 2px 0;font-weight:bold"; gl.textContent = "参数控制"; tagPanel.appendChild(gl);
+        const gl = document.createElement("div"); gl.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin:10px 0 2px 0";
+        const glT = document.createElement("span"); glT.style.cssText = "font-size:10px;color:#e67e22;font-weight:bold"; glT.textContent = "参数控制"; gl.appendChild(glT);
+        const rstBtn = document.createElement("button"); rstBtn.textContent = "↺"; rstBtn.style.cssText = "font-size:10px;background:none;border:1px solid #555;color:#e67e22;border-radius:3px;cursor:pointer;padding:0 5px";
+        rstBtn.title = "复位参数控制";
+        rstBtn.onclick = function () {
+          TAGS.xy_mult_enabled = true; TAGS.xy_mult = 10;
+          TAGS.extra_master = 1;
+          ["azimuth","elevation","distance","tilt"].forEach(a => { if (TAGS[a]) { TAGS[a].extra = 0; TAGS[a].enabled = true; } });
+          // 刷新所有滑块 + 值文本 + 复选框
+          tagPanel.querySelectorAll("input[type=range]").forEach(sl => {
+            if (sl._tagAxis && TAGS[sl._tagAxis]) {
+              const v = TAGS[sl._tagAxis][sl._tagKey] ?? 0;
+              sl.value = v;
+              const sv = sl.nextElementSibling;
+              if (sv && sv.tagName === "SPAN") sv.textContent = parseFloat(v).toFixed(1);
+            }
+          });
+          // 刷新 XY 乘数滑块
+          const xySl = tagPanel.querySelector("input[type=range][min='1']");
+          if (xySl) { xySl.value = TAGS.xy_mult ?? 10; const sv = xySl.nextElementSibling; if (sv && sv.tagName === "SPAN") sv.textContent = xySl.value; }
+          // 刷新总控乘数滑块
+          const emSl = tagPanel.querySelector("input[type=range][min='0.1']");
+          if (emSl) { emSl.value = TAGS.extra_master ?? 1; const sv = emSl.nextElementSibling; if (sv && sv.tagName === "SPAN") sv.textContent = emSl.value; }
+          // 刷新 XY 复选框
+          const xyChk = tagPanel.querySelector("input[type=checkbox]");
+          if (xyChk) xyChk.checked = true;
+          // 刷新各轴额外复选框
+          tagPanel.querySelectorAll("input[type=checkbox]").forEach((chk, i) => {
+            if (i === 0) return; // skip XY
+            const axis = chk._tagAxis;
+            if (axis && TAGS[axis]) chk.checked = TAGS[axis].enabled !== false;
+          });
+          syncTagsToWidget();
+        };
+        gl.appendChild(rstBtn);
+        tagPanel.appendChild(gl);
         // XY 乘数覆盖
         const rowXy = document.createElement("div"); rowXy.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0";
         const lblXy = document.createElement("span"); lblXy.textContent = "XY乘数"; lblXy.style.cssText = "width:60px;font-size:9px;color:rgba(255,255,255,0.6)"; rowXy.appendChild(lblXy);
