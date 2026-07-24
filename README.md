@@ -13,6 +13,9 @@ git clone https://github.com/xunying7860/Comfyui-Anima_camera_angle.git
 
 ## 节点说明
 
+<img width="2303" height="1507" alt="image" src="https://github.com/user-attachments/assets/14bda27c-5424-44f6-81d0-4eb0596d856c" />
+
+
 ### Anima 相机控制（主节点）
 
 | 输入 | 说明 |
