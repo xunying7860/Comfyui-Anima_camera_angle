@@ -152,7 +152,7 @@ app.registerExtension({
       node.setSize([Math.max(ow, 380), Math.max(oh, 580)]);
 
       const container = document.createElement("div"); container.className = "an3-w"; container.style.width = "100%";
-      try { node.addDOMWidget("cam3d", "anima-cam-3d", container, { getMinHeight: () => 400, getMaxHeight: () => 800, hideOnZoom: false, serialize: false }); }
+      try { node.addDOMWidget("cam3d", "anima-cam-3d", container, { getMinHeight: () => 400, getMaxHeight: () => 1400, hideOnZoom: false, serialize: false }); }
       catch (e) { console.warn("[AnimaCamera] addDOMWidget fail:", e); return; }
 
       // ============= Three.js 场景 =============
@@ -344,10 +344,13 @@ app.registerExtension({
 
       // ---- 更新 3D ----
       function upd() {
-        S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
-        S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = parseFloat(gw("roll")?.value ?? 0);
-        S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
-        snapDist();
+        // 拖拽进行中不要从控件回读状态：新版 ComfyUI 下 upd() 每帧运行，会覆盖拖拽结果导致 Z 轴小球拖不动
+        if (!S.dragging) {
+          S.px = toFixed2(gw("pos_x")?.value ?? 0); S.py = toFixed2(gw("pos_y")?.value ?? 0);
+          S.pz = toFixed2(gw("pos_z")?.value ?? 0); S.rv = parseFloat(gw("roll")?.value ?? 0);
+          S.azimuth = (S.px * 180 + 360) % 360; S.elevation = S.py * 45 + 15; S.dist = S.pz * 4.5 + 5.5;
+          snapDist();
+        }
         // 从 TAGS 同步配置到预览（BSK 风格）
         S.cfg.azimuth.enabled = TAGS.azimuth.enabled;
         S.cfg.azimuth.weight = TAGS.azimuth.weight ?? 10;
@@ -422,7 +425,7 @@ app.registerExtension({
         } else if (S.tgt === "el") {
           plane.setFromNormalAndCoplanarPoint(new THREE.Vector3(1, 0, 0), new THREE.Vector3(-0.8, 0, 0));
           if (ray.ray.intersectPlane(plane, pt)) { let a = Math.atan2(pt.y - CENTER.y, pt.z) * 180 / Math.PI; a = Math.max(-30, Math.min(60, a)); S.elevation = a; S.py = (a - 15) / 45; syncN(); }
-        } else if (S.tgt === "dist") { S.dist = Math.max(1, Math.min(10, S.dist + (e.movementY || 0) * 0.05)); S.pz = (S.dist - 5.5) / 4.5; }
+        } else if (S.tgt === "dist") { S.dist = Math.max(1, Math.min(10, S.dist + (e.movementY || 0) * 0.05)); S.pz = (S.dist - 5.5) / 4.5; syncN(); }
       });
       renderer.domElement.addEventListener("pointerup", () => {
         if (!S.dragging) return;
@@ -430,14 +433,19 @@ app.registerExtension({
         S.dragging = false; S.tgt = null; if (S.hovered) setScale(S.hovered, 1.0); syncN();
       });
       renderer.domElement.addEventListener("pointercancel", () => { S.dragging = false; S.tgt = null; });
-      renderer.domElement.addEventListener("wheel", e => {
-        e.preventDefault();
+      // wheel：新版 ComfyUI 前端在 graph-canvas-container 捕获阶段 stopPropagation，
+      // 画布自身监听收不到滚轮事件；改用 window 捕获阶段监听，仅当光标落在 3D 画布内时处理
+      const onCanvasWheel = e => {
+        const rc = renderer.domElement.getBoundingClientRect();
+        if (e.clientX < rc.left || e.clientX > rc.right || e.clientY < rc.top || e.clientY > rc.bottom) return;
+        e.preventDefault(); e.stopPropagation();
         let idx = DIST_GEARS.indexOf(S.pz);
         if (idx < 0) { snapDist(); idx = DIST_GEARS.indexOf(S.pz); }
         const dir = e.deltaY > 0 ? 1 : -1;
         const ni = Math.max(0, Math.min(DIST_GEARS.length - 1, (idx >= 0 ? idx : 3) + dir));
         S.pz = DIST_GEARS[ni]; S.dist = S.pz * 4.5 + 5.5; syncN();
-      }, { passive: false });
+      };
+      window.addEventListener("wheel", onCanvasWheel, { capture: true, passive: false });
 
       // ---- 按钮行 ----
       const bRow = document.createElement("div"); bRow.className = "btn-r"; container.appendChild(bRow);
@@ -446,7 +454,7 @@ app.registerExtension({
       bRow.appendChild(rst);
       // ---- 标签编辑按钮 ----
       const tagBtn = document.createElement("button"); tagBtn.textContent = "标签";
-      const TAG_PANEL_H = 380;
+      const TAG_PANEL_H = 620;
       tagBtn.onclick = function () {
         const show = tagPanel.style.display === "none";
         tagPanel.style.display = show ? "block" : "none";
@@ -458,7 +466,7 @@ app.registerExtension({
 
       // ---- 标签编辑面板 ----
       const tagPanel = document.createElement("div");
-      tagPanel.style.cssText = "display:none;border:1px solid #444;border-radius:6px;padding:6px;background:rgba(0,0,0,0.3);margin-top:4px;max-height:400px;overflow-y:auto";
+      tagPanel.style.cssText = "display:none;border:1px solid #444;border-radius:6px;padding:6px;background:rgba(0,0,0,0.3);margin-top:4px;max-height:620px;overflow-y:auto";
       container.appendChild(tagPanel);
 
       const tagFields = [
@@ -600,6 +608,7 @@ app.registerExtension({
         domWidget.onRemove = function () {
           alive = false;
           if (S.animId) cancelAnimationFrame(S.animId);
+          try { window.removeEventListener("wheel", onCanvasWheel, { capture: true }); } catch (_) {}
           try { renderer.dispose(); } catch (_) {}
           if (baseRO) baseRO.call(this);
         };
